@@ -27,7 +27,7 @@ play/pause, next, previous and volume keys work without the cursor.
 
 - **While playing** (no cursor) the widget shows just the music: no settings/close buttons and no volume section,
   and it's that much shorter. They come back in cursor mode.
-- **Move:** in cursor mode, drag the title bar (or the slim grip strip when the title bar is off).
+- **Move:** in cursor mode, drag anywhere on the widget (except a button or slider).
 - **Resize:** drag any edge or corner. Wide and short becomes a horizontal bar, tall and narrow a portrait
   layout. Parts that don't fit (volume, album art) step aside instead of being cut off.
 - **Scale / opacity / parts:** in the settings window, or Ctrl + mouse wheel over the widget for the scale.
@@ -35,7 +35,7 @@ play/pause, next, previous and volume keys work without the cursor.
 ### Safeguards against moving it by accident
 
 - Outside cursor mode the widget ignores the mouse completely: clicks go to the game.
-- It can only be picked up by its title bar and its edges, never by the middle.
+- Buttons and sliders never start a drag: pressing one only does what the button does.
 - It only moves after the button is held for a moment (150 ms) **and** the mouse has travelled a few pixels.
 - Combat: cursor mode switches off when a fight starts, and can't be switched on during one.
 - Lock position and size, undo (Ctrl + Z and a button in the settings), and it always stays on screen,

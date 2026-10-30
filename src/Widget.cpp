@@ -1618,7 +1618,9 @@ namespace Widget
 				if (bo) return Grab::S;
 				if (l) return Grab::W;
 				if (r) return Grab::E;
-				if (a_p.x >= g_zones.gripA.x && a_p.x <= g_zones.gripB.x && a_p.y >= g_zones.gripA.y && a_p.y <= g_zones.gripB.y) {
+				// anywhere else on the panel moves it (buttons and sliders keep their clicks: HandleDrag only starts
+				// a drag when no control is under the cursor)
+				if (a_p.x >= a_a.x && a_p.x <= a_b.x && a_p.y >= a_a.y && a_p.y <= a_b.y) {
 					return Grab::Move;
 				}
 			}
@@ -1641,7 +1643,8 @@ namespace Widget
 			}
 		}
 
-		// Moving / resizing with the safeguards: title bar only, a short hold and a few pixels before anything moves.
+		// Moving / resizing with the safeguards: only in cursor mode, never from a button or slider, and only after a
+		// short hold and a few pixels of mouse travel.
 		void HandleDrag(ImVec2 a_a, ImVec2 a_b)
 		{
 			auto&      io = ImGui::GetIO();
@@ -1873,7 +1876,7 @@ namespace Widget
 					}
 					Gap();
 					Theme::SectionLabel("Show");
-					ToggleRow("Title bar", "\"Now Playing\" with the settings and close buttons. Without it the widget is picked up by a slim strip along its top.", &cfg.showHeader);
+					ToggleRow("Title bar", "\"Now Playing\" with the settings and close buttons. Without it, there's a slim strip along the top for the settings and close buttons.", &cfg.showHeader);
 					ToggleRow("Album art", nullptr, &cfg.showArt);
 					ToggleRow("Progress bar", "Song position. Click it to jump (if the app allows).", &cfg.showProgress);
 					ToggleRow("Volume and music mute", "Shown when there's room for them", &cfg.showSound);
@@ -1919,7 +1922,7 @@ namespace Widget
 					ImGui::EndDisabled();
 					Gap();
 					Theme::SectionLabel("Moving and resizing");
-					Row("Hold before it moves", "How long the mouse button must be held on the title bar or an edge before the widget moves");
+					Row("Hold before it moves", "How long the mouse button must be held on the widget before it moves or resizes");
 					if (Theme::SliderInt("##delay", &cfg.dragDelayMs, 0, 600, "%d ms", ctl)) {
 						MarkDirty();
 					}
