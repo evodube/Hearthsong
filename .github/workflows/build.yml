@@ -1,0 +1,122 @@
+name: Build Hearthsong
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # lets the job push its logs to the ci-logs branch
+
+jobs:
+  build:
+    runs-on: windows-2022   # has Visual Studio 2022 (windows-latest moved on)
+    env:
+      # Current vcpkg checkout for its helper scripts/download URLs; the package versions
+      # come from builtin-baseline in vcpkg.json (vcpkg 2024.01.12), to match CommonLibSSE-NG 3.7.0.
+      VCPKG_COMMIT: 9e593bb18ea69cc5095e012465dcd675a822ed0d   # vcpkg 2026.07.29
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-bincache
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static-md
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: vcpkg-bincache
+          key: vcpkg-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ env.VCPKG_COMMIT }}-
+
+      - name: Set up vcpkg
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:VCPKG_DEFAULT_BINARY_CACHE" | Out-Null
+          git clone https://github.com/microsoft/vcpkg "$env:VCPKG_ROOT"
+          git -C "$env:VCPKG_ROOT" checkout $env:VCPKG_COMMIT
+          & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+
+      - name: Configure
+        id: configure
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-md `
+            "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`$<`$<CONFIG:Debug>:Debug>DLL" 2>&1 | Tee-Object -FilePath logs/configure.txt
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Build
+        id: build
+        if: steps.configure.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --parallel -- /p:CL_MPCount=4 /nologo /v:minimal 2>&1 | Tee-Object -FilePath logs/build.txt
+          $code = $LASTEXITCODE
+          Select-String -Path logs/build.txt -Pattern ': (fatal )?error ' | Select-Object -First 40 | ForEach-Object { Write-Output "::error::$($_.Line.Trim())" }
+          if ($code -ne 0) { exit 1 }
+
+      - name: Publish logs to ci-logs branch
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          if (Test-Path "$env:VCPKG_ROOT/buildtrees") {
+            Get-ChildItem "$env:VCPKG_ROOT/buildtrees" -Recurse -Filter *.log -ErrorAction SilentlyContinue |
+              ForEach-Object { Copy-Item $_.FullName ("logs/vcpkg-" + $_.Directory.Name + "-" + $_.Name) }
+          }
+          if (Test-Path build/vcpkg-manifest-install.log) { Copy-Item build/vcpkg-manifest-install.log logs/ }
+          if (Test-Path build/CMakeFiles/CMakeOutput.log) { Copy-Item build/CMakeFiles/CMakeOutput.log logs/ }
+          "run ${{ github.run_id }} sha ${{ github.sha }} configure=${{ steps.configure.outcome }} build=${{ steps.build.outcome }}" | Out-File logs/STATUS.txt
+          Copy-Item -Recurse logs $env:RUNNER_TEMP/logs-out
+          cd $env:RUNNER_TEMP/logs-out
+          git init -q -b ci-logs
+          git config user.name "ci"; git config user.email "ci@users.noreply.github.com"
+          git add -A; git commit -q -m "logs for run ${{ github.run_id }}"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" ci-logs
+
+      - name: Fail if configure/build failed
+        if: steps.configure.outcome != 'success' || steps.build.outcome != 'success'
+        shell: pwsh
+        run: exit 1
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "package"
+          New-Item -ItemType Directory -Force -Path "$out/Data/SKSE/Plugins/Hearthsong/Fonts" | Out-Null
+          Copy-Item build/Release/Hearthsong.dll "$out/Data/SKSE/Plugins/"
+          Copy-Item Hearthsong.ini "$out/Data/SKSE/Plugins/"
+          Copy-Item assets/fonts/* "$out/Data/SKSE/Plugins/Hearthsong/Fonts/"
+          Get-ChildItem -Recurse $out | Format-Table FullName, Length
+
+      - name: Publish package to dist branch
+        shell: pwsh
+        run: |
+          Copy-Item -Recurse package $env:RUNNER_TEMP/dist-out
+          if (Test-Path build/Release/Hearthsong.pdb) { Copy-Item build/Release/Hearthsong.pdb $env:RUNNER_TEMP/dist-out/ }
+          "run ${{ github.run_id }} sha ${{ github.sha }}" | Out-File $env:RUNNER_TEMP/dist-out/BUILD.txt
+          cd $env:RUNNER_TEMP/dist-out
+          git init -q -b dist
+          git config user.name "ci"; git config user.email "ci@users.noreply.github.com"
+          git add -A; git commit -q -m "Hearthsong build ${{ github.run_id }}"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" dist
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hearthsong
+          path: package/
+
+      - name: Upload PDB
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hearthsong-pdb
+          path: build/Release/Hearthsong.pdb
+          if-no-files-found: ignore
