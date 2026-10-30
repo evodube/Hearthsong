@@ -310,7 +310,7 @@ namespace Widget
 		void Notify(std::string a_text)
 		{
 			if (auto* t = SKSE::GetTaskInterface()) {
-				t->AddTask([a_text]() { RE::DebugNotification(a_text.c_str()); });
+				t->AddTask([a_text]() { RE::SendHUDMessage::ShowHUDMessage(a_text.c_str()); });
 			}
 		}
 
@@ -412,7 +412,7 @@ namespace Widget
 			// installed) the game's own control switches are the fallback.
 			if (!g_dispatchInput || !dbg.blockInput) {
 				if (auto* cm = RE::ControlMap::GetSingleton()) {
-					cm->ToggleControls(blocked, !a_on);
+					cm->ToggleControls(blocked, !a_on, false);
 				}
 				g_controlsBlocked = a_on;
 			}
@@ -1305,12 +1305,14 @@ namespace Widget
 			// grip strip on the left
 			g_zones.gripA = a;
 			g_zones.gripB = ImVec2(a.x + U(16.0f), b.y);
-			GripDots(dl, ImVec2(a.x + U(9.0f), (a.y + b.y) * 0.5f), true);
+			if (g_cursor) {
+				GripDots(dl, ImVec2(a.x + U(9.0f), (a.y + b.y) * 0.5f), true);
+			}
 			float x = a.x + U(20.0f);
 			const float right = b.x - U(10.0f);
-			// close + gear stacked on the right
-			const float sb = (std::min)(U(26.0f), (hgt - U(16.0f)) * 0.5f);
-			{
+			// close + gear stacked on the right - only in cursor mode
+			const float sb = g_cursor ? (std::min)(U(26.0f), (hgt - U(16.0f)) * 0.5f) : 0.0f;
+			if (g_cursor) {
 				if (Button("##close", ImVec2(right - sb, a.y + U(8.0f)), ImVec2(sb, sb), BtnStyle::Ghost, IconClose, sb * 0.9f, true, false, "Hide the widget")) {
 					cfg.visible = false;
 					g_wantCursor = false;
@@ -1321,7 +1323,7 @@ namespace Widget
 					g_settingsOpen = !g_settingsOpen;
 				}
 			}
-			float x1 = right - sb - U(10.0f);
+			float x1 = g_cursor ? right - sb - U(10.0f) : right - U(4.0f);
 			const bool ok = a_m.hasSession;
 			if (cfg.showArt) {
 				const float as = std::clamp(hgt - U(24.0f), U(40.0f), U(120.0f));
@@ -1343,7 +1345,7 @@ namespace Widget
 			}
 			// transport on the right
 			const bool  wideExtras = (b.x - a.x) >= U(560.0f);
-			const bool  vol = cfg.showSound && (b.x - a.x) >= U(760.0f);
+			const bool  vol = g_cursor && cfg.showSound && (b.x - a.x) >= U(760.0f);
 			const float unit = std::clamp((hgt - U(20.0f)) / U(46.0f), 0.7f, 1.0f);
 			const float tw = (wideExtras ? U(34.0f * unit) * 2 + U(10.0f * unit) * 2 : 0.0f) + U(42.0f * unit) * 2 + U(54.0f * unit) + U(10.0f * unit) * 2;
 			if (vol) {
@@ -1383,7 +1385,9 @@ namespace Widget
 				dl->AddText(FTitle(), ts, ImVec2(x0, y + U(2.0f)), kText(), "Now Playing");
 				const std::string sub = a_m.hasSession ? (a_m.playing ? "Spotify  \xC2\xB7  playing" : "Spotify  \xC2\xB7  paused") : "Spotify";
 				dl->AddText(FText(), U(11.0f), ImVec2(x0, y + U(26.0f)), kDim(), cfg.anyPlayer && a_m.hasSession ? (a_m.playing ? "Playing" : "Paused") : sub.c_str());
-				SideButtons(x1, y + U(6.0f), U(32.0f), true);
+				if (g_cursor) {
+					SideButtons(x1, y + U(6.0f), U(32.0f), true);
+				}
 				g_zones.gripA = ImVec2(a.x, a.y);
 				g_zones.gripB = ImVec2(x1 - U(32.0f) - U(6.0f) - U(30.0f) - U(20.0f), y + hh);
 				HairlineFade(dl, x0, x1, y + hh);
@@ -1393,8 +1397,10 @@ namespace Widget
 				const float gh = U(24.0f);
 				g_zones.gripA = ImVec2(a.x + U(10.0f), a.y);
 				g_zones.gripB = ImVec2(x1 - U(56.0f), a.y + gh);
-				GripDots(dl, ImVec2((a.x + b.x) * 0.5f, a.y + gh * 0.5f), false);
-				SideButtons(x1 + U(8.0f), a.y + U(3.0f), U(22.0f), false);
+				if (g_cursor) {
+					GripDots(dl, ImVec2((a.x + b.x) * 0.5f, a.y + gh * 0.5f), false);
+					SideButtons(x1 + U(8.0f), a.y + U(3.0f), U(22.0f), false);
+				}
 				y = a.y + gh + U(4.0f);
 			}
 			if (!a_m.hasSession) {
@@ -1437,7 +1443,7 @@ namespace Widget
 			if (textOnly) {
 				left -= U(30.0f);
 			}
-			const bool sound = cfg.showSound && left >= soundH;
+			const bool sound = g_cursor && cfg.showSound && left >= soundH;  // volume + music mute: cursor mode only
 
 			if (bigArt > 0.0f) {
 				ArtBox(dl, ImVec2((x0 + x1 - bigArt) * 0.5f, y), bigArt, U(8.0f), true);
@@ -1645,12 +1651,45 @@ namespace Widget
 			KeepOnScreen();
 		}
 
+		// The sound section's height when it fits in a stacked layout (0 if it doesn't). Outside cursor mode the
+		// section is hidden and the widget is that much shorter (its top edge stays put). Same rules as DrawStacked.
+		float SoundSectionHeight(bool a_tall)
+		{
+			constexpr float progH = 27.0f, ctrlH = 46.0f, soundH = 118.0f;
+			const float     y = cfg.showHeader ? 14.0f + 46.0f + 14.0f : 24.0f + 4.0f;
+			float           left = (cfg.h - 16.0f - y) - (cfg.showProgress ? progH : 0.0f) - ctrlH;
+			float           bigArt = 0.0f;
+			bool            rowArt = false;
+			if (cfg.showArt && a_tall) {
+				bigArt = (std::min)(cfg.w - 40.0f, left - 58.0f - (cfg.showSound ? soundH : 0.0f) - 14.0f);
+				if (bigArt < 80.0f) {
+					bigArt = (std::min)(cfg.w - 40.0f, left - 58.0f - 14.0f);
+				}
+				if (bigArt >= 80.0f) {
+					left -= bigArt + 14.0f + 58.0f;
+				} else {
+					bigArt = 0.0f;
+				}
+			}
+			if (cfg.showArt && bigArt <= 0.0f && left >= 96.0f) {
+				rowArt = true;
+				left -= 96.0f;
+			}
+			if (bigArt <= 0.0f && !rowArt) {
+				left -= 30.0f;
+			}
+			return cfg.showSound && left >= soundH ? soundH : 0.0f;
+		}
+
 		void DrawWidget(const Media::Snapshot& a_m)
 		{
 			KeepOnScreen();
 			const float  k = g_k;
 			const ImVec2 a(std::round(cfg.posX * g_displayW), std::round(cfg.posY * g_displayH));
-			const ImVec2 b = a + ImVec2(std::round(cfg.w * k), std::round(cfg.h * k));
+			const ImVec2 bFull = a + ImVec2(std::round(cfg.w * k), std::round(cfg.h * k));  // the size the player set
+			const Layout layout = LayoutFor(cfg.w, cfg.h);
+			const float  cut = (!g_cursor && a_m.hasSession && layout != Layout::Wide) ? SoundSectionHeight(layout == Layout::Tall) : 0.0f;
+			const ImVec2 b(bFull.x, std::round(bFull.y - cut * k));  // what's drawn: shorter outside cursor mode
 			const float  margin = U(10.0f);
 			ImGui::SetNextWindowPos(a - ImVec2(margin, margin), ImGuiCond_Always);
 			ImGui::SetNextWindowSize(b - a + ImVec2(margin, margin) * 2.0f, ImGuiCond_Always);
@@ -1665,11 +1704,10 @@ namespace Widget
 			dl->PushClipRect(a - ImVec2(margin, margin), b + ImVec2(margin, margin), false);
 			Panel(dl, a, b, g_cursor);
 			dl->PushClipRect(a, b, true);
-			const Layout layout = LayoutFor(cfg.w, cfg.h);
 			if (layout == Layout::Wide) {
 				DrawWide(a_m, a, b);
 			} else {
-				DrawStacked(a_m, a, b, layout == Layout::Tall);
+				DrawStacked(a_m, a, bFull, layout == Layout::Tall);  // laid out for the full size, so nothing moves when the cursor comes up
 			}
 			dl->PopClipRect();
 			// resize corner hint
@@ -2124,13 +2162,6 @@ namespace Widget
 		}
 		mgr->AddEventSink<RE::InputEvent*>(&sink);
 		return true;
-	}
-
-	void PrepareInputBlocker()
-	{
-		if (dbg.inputSink && dbg.blockInput) {
-			SKSE::AllocTrampoline(14);  // reserved at plugin load; the hook itself goes in on the first game load
-		}
 	}
 
 	void InstallInputBlocker()

@@ -15,7 +15,6 @@ namespace Widget
 	void                 LoadSettings();  // plugin load
 	const DebugSwitches& GetDebugSwitches();
 	bool                 InstallInputSink();  // kDataLoaded
-	void                 PrepareInputBlocker();  // plugin load (reserves trampoline space)
 	void                 InstallInputBlocker();  // first kPostLoadGame / kNewGame: after every mod that hooks input at the main menu
 	void                 OnDataLoaded();      // finds Skyrim's music sound category
 	void                 OnGameLoaded();      // a save was loaded / new game: the widget may show

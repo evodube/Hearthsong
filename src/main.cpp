@@ -70,7 +70,8 @@ namespace
 	IDXGISwapChain* GetGameSwapChain()
 	{
 		auto* renderer = RE::BSGraphics::Renderer::GetSingleton();
-		return renderer ? renderer->data.renderWindows[0].swapChain : nullptr;
+		// GetRuntimeData(): the renderer's data sits at the right place on every game version
+		return renderer ? reinterpret_cast<IDXGISwapChain*>(renderer->GetRuntimeData().renderWindows[0].swapChain) : nullptr;
 	}
 
 	bool SafeInstallPresentHook()
@@ -138,16 +139,41 @@ namespace
 	}
 }
 
+namespace
+{
+	// Which game this is and whether the Address Library file for it is there (SE: version-*.bin, AE/GOG: versionlib-*.bin)
+	void LogRuntime()
+	{
+		const auto ver = REL::Module::get().version();
+		const bool ae = REL::Module::IsAE();
+		std::string build = ae ? "Anniversary Edition (1.6+)" : "Special Edition (1.5)";
+		if (ver == REL::Version(1, 6, 659, 0) || ver == REL::Version(1, 6, 1179, 0)) {
+			build += ", GOG build";
+		}
+		spdlog::info("Game version {} - {}", ver.string("."sv), build);
+		const auto lib = ae ? fmt::format("Data\\SKSE\\Plugins\\versionlib-{}.bin", ver.string()) : fmt::format("Data\\SKSE\\Plugins\\version-{}.bin", ver.string());
+		std::error_code ec;
+		if (std::filesystem::exists(lib, ec)) {
+			spdlog::info("Address Library found: {}", lib);
+		} else {
+			spdlog::critical("Address Library NOT FOUND: {} - install 'Address Library for SKSE Plugins' (the All in one package covers SE, AE and GOG)", lib);
+		}
+	}
+}
+
 SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 {
-	SKSE::Init(a_skse);
+	// Our own log (Hearthsong.log with the last two runs kept); 14 bytes of trampoline for the input blocker
+	SKSE::InitInfo info{};
+	info.log = false;
+	info.trampoline = true;
+	info.trampolineSize = 14;
+	SKSE::Init(a_skse, info);
 	SetupLog();
 	spdlog::info("Hearthsong {} loaded, SKSE {}", SKSE::PluginDeclaration::GetSingleton()->GetVersion().string("."sv),
 		REL::Version::unpack(a_skse->SKSEVersion()).string("."sv));
-	const auto ver = REL::Module::get().version();
-	spdlog::info("Game version {}", ver.string("."sv));
+	LogRuntime();
 	Widget::LoadSettings();
-	Widget::PrepareInputBlocker();
 	if (!SKSE::GetMessagingInterface()->RegisterListener(OnMessage)) {
 		spdlog::error("Could not register with the SKSE messaging interface");
 		return false;

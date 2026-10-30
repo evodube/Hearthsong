@@ -1,16 +1,18 @@
 cmake_minimum_required(VERSION 3.24)
-project(Hearthsong VERSION 0.1.1 LANGUAGES CXX)
+project(Hearthsong VERSION 0.2.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# ---- CommonLibSSE-NG (git submodule, same commit as Hearthframe) ----
+# ---- CommonLibSSE-NG (git submodule: alandtse/CommonLibVR, branch ng) ----
+# The maintained CommonLib: one DLL for Skyrim SE 1.5.97, AE (1.6.x incl. 1.6.1130+ and 1.7.x) and the GOG builds.
+# Game structures whose layout differs between versions are read through runtime-aware accessors.
 set(ENABLE_SKYRIM_SE ON CACHE BOOL "" FORCE)
 set(ENABLE_SKYRIM_AE ON CACHE BOOL "" FORCE)
 set(ENABLE_SKYRIM_VR OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(extern/CommonLibSSE-NG EXCLUDE_FROM_ALL)
-include(extern/CommonLibSSE-NG/cmake/CommonLibSSE.cmake)
+include(extern/CommonLibSSE-NG/cmake/CommonLibSSE.cmake)  # add_commonlibsse_plugin()
 
 # ---- other dependencies (vcpkg) ----
 find_package(imgui CONFIG REQUIRED)
