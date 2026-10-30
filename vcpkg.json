@@ -1,6 +1,6 @@
 {
   "name": "hearthsong",
-  "version-string": "0.1.0",
+  "version-string": "0.1.1",
   "builtin-baseline": "53bef8994c541b6561884a8395ea35715ece75db",
   "dependencies": [
     "fmt",

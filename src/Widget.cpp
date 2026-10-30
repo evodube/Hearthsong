@@ -38,7 +38,7 @@ namespace Widget
 			"Volume up", "Volume down" };
 		const char* const kKeyHelp[kKeyCount] = {
 			"Shows or hides the widget. Works any time you're playing.",
-			"Shows a cursor so you can click, drag and resize the widget. The camera stops turning while it's on.",
+			"Shows a cursor so you can click, drag and resize the widget. While it's on, the game and other mods get no keys or clicks.",
 			"In cursor mode: Ctrl + this key puts the widget back where it was before the last move or resize.",
 			"Works without the cursor, any time you're playing. Your keyboard's own media keys work too.",
 			"Works without the cursor.",
@@ -260,6 +260,7 @@ namespace Widget
 		float                g_volDrag = -1.0f;   // volume slider value while dragging (and a moment after)
 		float                g_volDragUntil = 0.0f;
 		bool                 g_controlsBlocked = false;
+		std::uintptr_t       g_dispatchInput = 0;  // input blocker: the function we replaced the call to (game, or a mod in front of it)
 		std::string          g_status;            // short message under the settings footer
 		char                 g_appBuf[64]{};
 
@@ -341,7 +342,8 @@ namespace Widget
 			}
 			auto* cm = RE::ControlMap::GetSingleton();
 			using UEFlag = RE::ControlMap::UEFlag;
-			return !g_controlsBlocked && cm && !cm->AreControlsEnabled(UEFlag::kLooking);
+			return !g_controlsBlocked && cm &&
+			       !cm->AreControlsEnabled(static_cast<UEFlag>(static_cast<std::uint32_t>(UEFlag::kMovement) | static_cast<std::uint32_t>(UEFlag::kLooking)));
 		}
 
 		// ---- Skyrim's music: turned down while the music app plays
@@ -406,10 +408,14 @@ namespace Widget
 				static_cast<std::uint32_t>(UEFlag::kLooking) | static_cast<std::uint32_t>(UEFlag::kFighting) |
 				static_cast<std::uint32_t>(UEFlag::kActivate) | static_cast<std::uint32_t>(UEFlag::kMenu) |
 				static_cast<std::uint32_t>(UEFlag::kWheelZoom) | static_cast<std::uint32_t>(UEFlag::kPOVSwitch));
-			if (auto* cm = RE::ControlMap::GetSingleton()) {
-				cm->ToggleControls(blocked, !a_on);
+			// With the input blocker the game gets no presses at all. Without it (bBlockInput=0, or it couldn't be
+			// installed) the game's own control switches are the fallback.
+			if (!g_dispatchInput || !dbg.blockInput) {
+				if (auto* cm = RE::ControlMap::GetSingleton()) {
+					cm->ToggleControls(blocked, !a_on);
+				}
+				g_controlsBlocked = a_on;
 			}
-			g_controlsBlocked = a_on;
 			if (g_imguiReady) {
 				ImGui::GetIO().MouseDrawCursor = a_on;
 			}
@@ -650,17 +656,92 @@ namespace Widget
 			}
 		}
 
+		// ---- input blocker (the same fix as Hearthframe v0.12.1 - v0.12.6)
+		// In cursor mode the game and other mods (OAR, MeridianUI, minimaps, Hearthsworn...) must not see the keys
+		// and clicks meant for the widget. The game hands each frame's input to every listener in one call; we sit
+		// in front of that call, handle the input ourselves and pass on only the key/button releases.
+		using DispatchInput = void(RE::BSTEventSource<RE::InputEvent*>*, RE::InputEvent* const*);
+		bool           g_inBlockerPass = false;  // the list going on was already handled here: the sink skips it
+
+		void DispatchInputHook(RE::BSTEventSource<RE::InputEvent*>* a_source, RE::InputEvent* const* a_events)
+		{
+			const auto original = reinterpret_cast<DispatchInput*>(g_dispatchInput);
+			if (g_cursor && dbg.blockInput && a_events && *a_events && !g_inputDisabled) {
+				SafeHandleInput(a_events);
+				// Releases still go on, so nothing (movement, another mod's hold key, Shift...) stays held after the
+				// cursor goes away; presses - what hotkeys react to - stay with us. The list must be writable memory:
+				// mods further down the chain (SKSE Menu Framework...) write their filtered list back into it.
+				static RE::InputEvent* kept[1];
+				kept[0] = nullptr;
+				RE::InputEvent*              last = nullptr;
+				std::vector<RE::InputEvent*> releases;
+				for (auto* e = *a_events; e; e = e->next) {
+					if (auto* b = e->AsButtonEvent(); b && b->IsUp()) {
+						releases.push_back(e);
+					}
+				}
+				for (auto* e : releases) {
+					if (last) {
+						last->next = e;
+					} else {
+						kept[0] = e;
+					}
+					last = e;
+				}
+				if (last) {
+					last->next = nullptr;
+				}
+				g_inBlockerPass = true;
+				original(a_source, kept);
+				g_inBlockerPass = false;
+				return;
+			}
+			original(a_source, a_events);
+		}
+
 		class InputSink final : public RE::BSTEventSink<RE::InputEvent*>
 		{
 		public:
 			RE::BSEventNotifyControl ProcessEvent(RE::InputEvent* const* a_event, RE::BSTEventSource<RE::InputEvent*>*) override
 			{
-				if (!g_inputDisabled) {
+				if (!g_inputDisabled && !g_inBlockerPass) {
 					SafeHandleInput(a_event);
 				}
 				return RE::BSEventNotifyControl::kContinue;
 			}
 		};
+
+		// Which module a call target ends up in (follows other mods' trampoline jumps), for the log.
+		std::uintptr_t FollowJumps(std::uintptr_t a_addr)  // no C++ objects here: __try needs that
+		{
+			__try {
+				for (int hop = 0; hop < 6; ++hop) {
+					const auto* b = reinterpret_cast<const std::uint8_t*>(a_addr);
+					if (b[0] == 0xFF && b[1] == 0x25) {  // jmp [rip+disp32]
+						const auto disp = *reinterpret_cast<const std::int32_t*>(b + 2);
+						a_addr = *reinterpret_cast<const std::uintptr_t*>(a_addr + 6 + disp);
+					} else if (b[0] == 0xE9) {  // jmp rel32
+						a_addr = a_addr + 5 + *reinterpret_cast<const std::int32_t*>(b + 1);
+					} else {
+						break;
+					}
+				}
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+			}
+			return a_addr;
+		}
+
+		std::string ModuleOf(std::uintptr_t a_addr)
+		{
+			a_addr = FollowJumps(a_addr);
+			HMODULE mod = nullptr;
+			wchar_t path[MAX_PATH]{};
+			if (::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(a_addr), &mod) &&
+				::GetModuleFileNameW(mod, path, MAX_PATH)) {
+				return ToUtf8(fs::path(path).filename().wstring());
+			}
+			return fmt::format("unknown ({:X})", a_addr);
+		}
 
 		// Ctrl + wheel over the widget: its scale
 		bool g_wheelScale = false;
@@ -1199,7 +1280,22 @@ namespace Widget
 			if (!a_m.ready) {
 				return "Connecting...";
 			}
+			if (a_m.appRunning) {
+				return "Spotify is open, but Windows can't see it";
+			}
 			return cfg.anyPlayer ? "Nothing is playing" : "Spotify isn't open";
+		}
+
+		// second line under EmptyText
+		const char* EmptyHint(const Media::Snapshot& a_m)
+		{
+			if (a_m.unavailable) {
+				return "Needs Windows 10 (1809) or newer";
+			}
+			if (a_m.appRunning) {
+				return "Play a song in Spotify. Still nothing? See the Sound tab in settings";
+			}
+			return "Start it and play something";
 		}
 
 		void DrawWide(const Media::Snapshot& a_m, ImVec2 a, ImVec2 b)
@@ -1235,7 +1331,7 @@ namespace Widget
 			if (!ok) {
 				const float ts = U(14.0f);
 				Line(dl, FSemi(), ts, ImVec2(x, (a.y + b.y) * 0.5f - ts * 0.6f), kText(), EmptyText(a_m), x1 - x - U(130.0f));
-				if (a_m.ready && !a_m.unavailable && !cfg.anyPlayer) {
+				if (a_m.ready && !a_m.unavailable && !cfg.anyPlayer && !a_m.appRunning) {
 					const float bw = U(120.0f), bh = U(36.0f);
 					const ImVec2 bp(x1 - bw, (a.y + b.y - bh) * 0.5f);
 					if (Button("##openapp", bp, ImVec2(bw, bh), BtnStyle::Flat, IconNone, 0.0f, true, false, "Start Spotify")) {
@@ -1305,9 +1401,8 @@ namespace Widget
 				const float ts = U(15.0f);
 				const float cy = (y + yEnd) * 0.5f;
 				Line(dl, FSemi(), ts, ImVec2(x0, cy - U(34.0f)), kText(), EmptyText(a_m), x1 - x0, 0.5f);
-				Line(dl, FText(), U(12.0f), ImVec2(x0, cy - U(12.0f)), kDim(),
-					a_m.unavailable ? "Needs Windows 10 (1809) or newer" : "Start it and play something", x1 - x0, 0.5f);
-				if (a_m.ready && !a_m.unavailable && !cfg.anyPlayer && yEnd - cy > U(30.0f)) {
+				Line(dl, FText(), U(12.0f), ImVec2(x0, cy - U(12.0f)), kDim(), EmptyHint(a_m), x1 - x0, 0.5f);
+				if (a_m.ready && !a_m.unavailable && !cfg.anyPlayer && !a_m.appRunning && yEnd - cy > U(30.0f)) {
 					const float bw = U(150.0f), bh = U(40.0f);
 					const ImVec2 bp((x0 + x1 - bw) * 0.5f, cy + U(10.0f));
 					if (Button("##openapp", bp, ImVec2(bw, bh), BtnStyle::Gold, IconNone, 0.0f, true, false, "Start Spotify")) {
@@ -1800,6 +1895,33 @@ namespace Widget
 					}
 					ImGui::SetCursorPosX(ImGui::GetCursorPosX() + SS(320.0f));
 					Theme::TextItalic("Now controlling: %s", a_m.hasSession ? a_m.app.c_str() : "nothing");
+					Row("Apps Windows sees", "Every app that's sharing what it plays with Windows right now. Click one to control it.");
+					if (a_m.sessions.empty()) {
+						Theme::TextItalic("none");
+					} else {
+						for (std::size_t i = 0; i < a_m.sessions.size(); ++i) {
+							if (i) {
+								ImGui::SameLine(0.0f, SS(6.0f));
+							}
+							ImGui::PushID(static_cast<int>(1000 + i));
+							if (Theme::Chip(a_m.sessions[i].c_str(), a_m.hasSession && a_m.sessions[i] == a_m.app)) {
+								cfg.musicApp = a_m.sessions[i];
+								std::snprintf(g_appBuf, sizeof g_appBuf, "%s", cfg.musicApp.c_str());
+								Media::SetSettings(MediaSettings());
+								MarkDirty();
+							}
+							ImGui::PopID();
+						}
+					}
+					if (!a_m.hasSession && a_m.appRunning) {
+						Gap();
+						Theme::SectionLabel("Spotify is open but not in the list?");
+						Theme::TextColoredWrapped(Theme::Cream(),
+							"1. Play a song in Spotify - it only shows up in Windows once something has played.\n"
+							"2. In Spotify: Settings > Display > turn on \"Show desktop overlay when using media keys\", "
+							"then restart Spotify. With that setting off, Spotify can stop sharing what it plays with Windows.\n"
+							"3. Use the Spotify desktop app, not Spotify in a browser (a browser tab shows up as the browser).");
+					}
 				}
 			}
 			Theme::EndParchment();
@@ -1984,6 +2106,7 @@ namespace Widget
 		dbg.hookPresent = ReadBool("Debug", "bHookPresent", true);
 		dbg.inputSink = ReadBool("Debug", "bInputSink", true);
 		dbg.logInput = ReadBool("Debug", "bLogInput", false);
+		dbg.blockInput = ReadBool("Debug", "bBlockInput", true);
 		spdlog::info("INI: {} ({})", g_iniPath, fs::exists(g_iniPath, ec) ? "found" : "NOT FOUND - using defaults");
 		spdlog::info("Keys: show/hide {} ({}), cursor {} ({}), music app \"{}\"", KeyName(cfg.keyVk[kKeyToggle]), cfg.keyVk[kKeyToggle], KeyName(cfg.keyVk[kKeyCursor]),
 			cfg.keyVk[kKeyCursor], cfg.musicApp);
@@ -2001,6 +2124,32 @@ namespace Widget
 		}
 		mgr->AddEventSink<RE::InputEvent*>(&sink);
 		return true;
+	}
+
+	void PrepareInputBlocker()
+	{
+		if (dbg.inputSink && dbg.blockInput) {
+			SKSE::AllocTrampoline(14);  // reserved at plugin load; the hook itself goes in on the first game load
+		}
+	}
+
+	void InstallInputBlocker()
+	{
+		if (!dbg.inputSink || !dbg.blockInput) {
+			spdlog::info("Input blocker off (bInputSink={} bBlockInput={})", dbg.inputSink, dbg.blockInput);
+			return;
+		}
+		// BSInputDeviceManager::PollInputDevices -> the call that sends the input events to all listeners
+		// (same place Hearthframe hooks; with both installed, each one calls the one behind it)
+		REL::Relocation<std::uintptr_t> target{ REL::RelocationID(67315, 68617), REL::VariantOffset(0x7B, 0x7B, 0x81) };
+		const auto* code = reinterpret_cast<const std::uint8_t*>(target.address());
+		if (*code != 0xE8) {  // not a call: different game build or another mod rewrote it
+			spdlog::warn("Input blocker: unexpected code at {:X} ({:02X}) - other mods' hotkeys can still fire in cursor mode", target.address(), *code);
+			return;
+		}
+		const std::uintptr_t next = target.address() + 5 + *reinterpret_cast<const std::int32_t*>(code + 1);
+		g_dispatchInput = SKSE::GetTrampoline().write_call<5>(target.address(), &DispatchInputHook);
+		spdlog::info("Input blocker installed in front of {} - in cursor mode the game and other mods get no keys", ModuleOf(next));
 	}
 
 	void OnDataLoaded()

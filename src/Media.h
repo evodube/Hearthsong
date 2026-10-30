@@ -18,6 +18,8 @@ namespace Media
 		bool        unavailable = false;  // they never will (old Windows): the widget says so
 		bool        hasSession = false;  // the music app is running and has shown up in Windows' media controls
 		std::string app;                 // app id Windows reports (e.g. "Spotify.exe")
+		std::vector<std::string> sessions;  // every app Windows' media controls know about right now
+		bool        appRunning = false;     // the music app's program is running (even if Windows doesn't list it)
 		std::string title, artist, album;
 		bool        playing = false;
 		bool        shuffle = false, shuffleKnown = false;

@@ -121,8 +121,17 @@ namespace
 			}
 		case SKSE::MessagingInterface::kPostLoadGame:
 		case SKSE::MessagingInterface::kNewGame:
-			Widget::OnGameLoaded();
-			break;
+			{
+				// First save loaded / new game: later than every plugin that hooks input at the main menu
+				// (Hearthsworn, OAR's menu...), so our blocker is first in line. Only the first time.
+				static bool blockerDone = false;
+				if (!blockerDone) {
+					blockerDone = true;
+					Widget::InstallInputBlocker();
+				}
+				Widget::OnGameLoaded();
+				break;
+			}
 		default:
 			break;
 		}
@@ -138,6 +147,7 @@ SKSEPluginLoad(const SKSE::LoadInterface* a_skse)
 	const auto ver = REL::Module::get().version();
 	spdlog::info("Game version {}", ver.string("."sv));
 	Widget::LoadSettings();
+	Widget::PrepareInputBlocker();
 	if (!SKSE::GetMessagingInterface()->RegisterListener(OnMessage)) {
 		spdlog::error("Could not register with the SKSE messaging interface");
 		return false;

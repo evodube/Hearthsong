@@ -11,6 +11,7 @@
 #include <shellapi.h>
 #include <mmdeviceapi.h>
 #include <audiopolicy.h>
+#include <tlhelp32.h>
 
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
@@ -111,6 +112,26 @@ namespace Media
 				::CloseHandle(h);
 			}
 			return Lower(out);
+		}
+
+		// Is a program whose file name contains a_needle running? (Toolhelp snapshot, no rights needed)
+		bool ProcessRunning(const std::string& a_needle)
+		{
+			if (a_needle.empty()) {
+				return false;
+			}
+			HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+			if (snap == INVALID_HANDLE_VALUE) {
+				return false;
+			}
+			PROCESSENTRY32W pe{};
+			pe.dwSize = sizeof pe;
+			bool found = false;
+			for (BOOL ok = ::Process32FirstW(snap, &pe); ok && !found; ok = ::Process32NextW(snap, &pe)) {
+				found = Lower(winrt::to_string(pe.szExeFile)).find(a_needle) != std::string::npos;
+			}
+			::CloseHandle(snap);
+			return found;
 		}
 
 		// All volume-mixer entries of the target program, on every active output device.
@@ -325,6 +346,8 @@ namespace Media
 			Snapshot    snap;
 			snap.ready = true;
 			std::string volNeedle;
+			std::string lastList = "-";
+			auto        nextRunning = std::chrono::steady_clock::time_point{};
 
 			for (;;) {
 				std::deque<Command> cmds;
@@ -339,6 +362,27 @@ namespace Media
 				const auto now = std::chrono::steady_clock::now();
 				bool       forceProps = false;
 				try {
+					{
+						std::vector<std::string> list;
+						std::string              joined;
+						for (const auto& s : mgr.GetSessions()) {
+							list.push_back(winrt::to_string(s.SourceAppUserModelId()));
+							joined += (joined.empty() ? "" : ", ") + list.back();
+						}
+						if (joined != lastList) {
+							spdlog::info("Apps in Windows' media controls: {}", joined.empty() ? "none" : joined);
+							lastList = joined;
+						}
+						snap.sessions = std::move(list);
+					}
+					if (now >= nextRunning) {
+						nextRunning = now + std::chrono::seconds(2);
+						const bool running = ProcessRunning(volNeedle);
+						if (running != snap.appRunning) {
+							spdlog::info("{} is {}running", set.targetApp, running ? "" : "not ");
+						}
+						snap.appRunning = running;
+					}
 					auto session = Pick(mgr, set);
 					for (const auto& c : cmds) {
 						try {
