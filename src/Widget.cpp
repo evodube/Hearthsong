@@ -60,6 +60,7 @@ namespace Widget
 			float w = kDefW, h = kDefH;        // size at 1080p and 100 % scale
 			int   scalePct = 100;
 			int   opacityPct = 95;
+			int   controlsOpacityPct = 100;  // album cover and controls (buttons, bars, sliders); text never fades
 			bool  showHeader = true, showArt = true, showProgress = true, showSound = true;
 			bool  locked = false;
 			// safety
@@ -175,6 +176,7 @@ namespace Widget
 			Write("Widget", "fHeight", fmt::format("{:.0f}", cfg.h));
 			Write("Widget", "iScale", std::to_string(cfg.scalePct));
 			Write("Widget", "iOpacity", std::to_string(cfg.opacityPct));
+			Write("Widget", "iCoverButtonsOpacity", std::to_string(cfg.controlsOpacityPct));
 			Write("Widget", "bShowTitleBar", B(cfg.showHeader));
 			Write("Widget", "bShowAlbumArt", B(cfg.showArt));
 			Write("Widget", "bShowProgress", B(cfg.showProgress));
@@ -789,10 +791,24 @@ namespace Widget
 		float g_k = 1.0f;  // widget pixels per 1080p unit (screen size x widget scale)
 		float U(float a_v) { return a_v * g_k; }
 
+		float g_fade = 1.0f;  // extra opacity while drawing the album cover and the controls (FadeControls)
+
 		ImU32 Col(int r, int g, int b, int a = 255)
 		{
-			return IM_COL32(r, g, b, static_cast<int>(a * std::clamp(g_alpha, 0.0f, 1.0f)));
+			return IM_COL32(r, g, b, static_cast<int>(a * std::clamp(g_alpha, 0.0f, 1.0f) * g_fade));
 		}
+
+		// While one of these is alive, everything drawn uses the "Album cover and buttons" opacity. Text is drawn
+		// outside it, so it stays solid.
+		struct FadeControls
+		{
+			float prev;
+			FadeControls() :
+				prev(g_fade) { g_fade = std::clamp(cfg.controlsOpacityPct, 10, 100) / 100.0f; }
+			~FadeControls() { g_fade = prev; }
+			FadeControls(const FadeControls&) = delete;
+			FadeControls& operator=(const FadeControls&) = delete;
+		};
 		ImU32 kText() { return Col(238, 234, 226); }
 		ImU32 kDim() { return Col(168, 164, 156); }
 		ImU32 kFaint() { return Col(138, 134, 127); }
@@ -1028,6 +1044,7 @@ namespace Widget
 		bool Button(const char* a_id, ImVec2 a_p, ImVec2 a_size, BtnStyle a_style, IconFn a_icon, float a_iconSize, bool a_enabled = true, bool a_on = false,
 			const char* a_tip = nullptr)
 		{
+			FadeControls fade;
 			ImGui::SetCursorScreenPos(a_p);
 			const bool pressed = ImGui::InvisibleButton(a_id, a_size);
 			const bool hov = ImGui::IsItemHovered() && a_enabled;
@@ -1081,6 +1098,7 @@ namespace Widget
 		// Switch like Hearthframe's modern toggle
 		bool Switch(const char* a_id, ImVec2 a_p, bool* a_v)
 		{
+			FadeControls fade;
 			const ImVec2 size(U(40.0f), U(22.0f));
 			ImGui::SetCursorScreenPos(a_p);
 			const bool pressed = ImGui::InvisibleButton(a_id, size);
@@ -1132,7 +1150,8 @@ namespace Widget
 				const float f = std::clamp((ImGui::GetIO().MousePos.x - bx0) / (bx1 - bx0), 0.0f, 1.0f);
 				Media::Seek(f * a_m.duration);
 			}
-			const float gx = bx0 + (bx1 - bx0) * std::clamp(frac, 0.0f, 1.0f);
+			const float  gx = bx0 + (bx1 - bx0) * std::clamp(frac, 0.0f, 1.0f);
+			FadeControls fade;  // the bar (the times above are text and stay solid)
 			dl->AddRectFilled(ImVec2(bx0, a_y - U(1.0f)), ImVec2(bx1, a_y + U(1.0f)), Col(255, 255, 255, 34), U(1.0f));
 			{  // soft glow around the filled part: 1 px lines fading out above and below (no hard band edge)
 				const int   peak = static_cast<int>(22 + 30 * h);
@@ -1186,11 +1205,14 @@ namespace Widget
 			}
 			const float v = g_volDrag >= 0.0f ? g_volDrag : (known ? (a_m.muted ? 0.0f : a_m.volume) : 0.0f);
 			const float gx = a_x0 + (bx1 - a_x0) * v;
-			dl->AddRectFilled(ImVec2(a_x0, a_y - U(1.0f)), ImVec2(bx1, a_y + U(1.0f)), Col(255, 255, 255, 34), U(1.0f));
-			if (known) {
-				dl->AddRectFilledMultiColor(ImVec2(a_x0, a_y - U(1.0f)), ImVec2(gx, a_y + U(1.0f)), kGoldDim(), kGold(), kGold(), kGoldDim());
-				const float hw = U(2.0f + 1.0f * h), hh = U(8.0f + 2.0f * h);
-				dl->AddRectFilled(ImVec2(gx - hw, a_y - hh), ImVec2(gx + hw, a_y + hh), kGold(), hw);
+			{
+				FadeControls fade;  // the slider (the number next to it is text and stays solid)
+				dl->AddRectFilled(ImVec2(a_x0, a_y - U(1.0f)), ImVec2(bx1, a_y + U(1.0f)), Col(255, 255, 255, 34), U(1.0f));
+				if (known) {
+					dl->AddRectFilledMultiColor(ImVec2(a_x0, a_y - U(1.0f)), ImVec2(gx, a_y + U(1.0f)), kGoldDim(), kGold(), kGold(), kGoldDim());
+					const float hw = U(2.0f + 1.0f * h), hh = U(8.0f + 2.0f * h);
+					dl->AddRectFilled(ImVec2(gx - hw, a_y - hh), ImVec2(gx + hw, a_y + hh), kGold(), hw);
+				}
 			}
 			if (a_number) {
 				const std::string n = known ? fmt::format("{}", static_cast<int>(std::lround(v * 100.0f))) : "--";
@@ -1206,14 +1228,14 @@ namespace Widget
 		void ArtBox(ImDrawList* a_dl, ImVec2 a_a, float a_size, float a_r, bool a_label)
 		{
 			const ImVec2 b = a_a + ImVec2(a_size, a_size);
-			const float  op = std::clamp(cfg.opacityPct, 30, 100) / 100.0f;  // the cover fades with the widget's opacity
-			SoftShadow(a_dl, a_a, b, a_r, U(10.0f), static_cast<int>(140 * op));
+			FadeControls fade;  // the cover uses the "Album cover and buttons" opacity
+			SoftShadow(a_dl, a_a, b, a_r, U(10.0f), 140);
 			if (g_art) {
-				a_dl->AddImageRounded(reinterpret_cast<ImTextureID>(g_art), a_a, b, ImVec2(0, 0), ImVec2(1, 1), Col(255, 255, 255, static_cast<int>(255 * op)), a_r);
+				a_dl->AddImageRounded(reinterpret_cast<ImTextureID>(g_art), a_a, b, ImVec2(0, 0), ImVec2(1, 1), Col(255, 255, 255), a_r);
 				a_dl->AddRect(a_a, b, Col(255, 255, 255, 26), a_r, 0, U(1.0f));
 				return;
 			}
-			a_dl->AddRectFilled(a_a, b, Col(10, 10, 12, static_cast<int>(255 * op)), a_r);
+			a_dl->AddRectFilled(a_a, b, Col(10, 10, 12), a_r);
 			a_dl->AddRect(a_a, b, Col(255, 255, 255, 26), a_r, 0, U(1.0f));
 			const ImVec2 c = a_a + ImVec2(a_size, a_size) * 0.5f - ImVec2(0, a_label ? U(6.0f) : 0.0f);
 			IconNote(a_dl, c, (std::min)(a_size * 0.4f, U(36.0f)), kFaint());
@@ -1871,8 +1893,12 @@ namespace Widget
 						MarkDirty();
 						g_pendingFonts = true;  // remade once the slider is let go
 					}
-					Row("Opacity", "How see-through the widget's background and album cover are (text and buttons stay solid)");
+					Row("Background opacity", "How see-through the widget's background is");
 					if (Theme::SliderInt("##opacity", &cfg.opacityPct, 30, 100, "%d%%", ctl)) {
+						MarkDirty();
+					}
+					Row("Cover and buttons opacity", "How see-through the album cover, the buttons, the progress bar and the sliders are.\nText never fades, so the song and times stay readable.");
+					if (Theme::SliderInt("##ctlopacity", &cfg.controlsOpacityPct, 10, 100, "%d%%", ctl)) {
 						MarkDirty();
 					}
 					Gap();
@@ -2183,6 +2209,7 @@ namespace Widget
 		cfg.h = ReadFloat("Widget", "fHeight", kDefH, kMinH, kMaxH);
 		cfg.scalePct = ReadInt("Widget", "iScale", 100, 10, 200);
 		cfg.opacityPct = ReadInt("Widget", "iOpacity", 95, 30, 100);
+		cfg.controlsOpacityPct = ReadInt("Widget", "iCoverButtonsOpacity", 100, 10, 100);
 		cfg.showHeader = ReadBool("Widget", "bShowTitleBar", true);
 		cfg.showArt = ReadBool("Widget", "bShowAlbumArt", true);
 		cfg.showProgress = ReadBool("Widget", "bShowProgress", true);
