@@ -78,6 +78,8 @@ namespace Widget
 			int         volumeStep = 5;
 			std::string musicApp = "Spotify";
 			bool        anyPlayer = false;
+			// diagnostics
+			bool        showFps = false;
 		} cfg;
 
 		DebugSwitches dbg;
@@ -161,39 +163,51 @@ namespace Widget
 		std::string B(bool a_v) { return a_v ? "1" : "0"; }
 		std::string F(float a_v) { return fmt::format("{:.4f}", a_v); }
 
-		void SaveAll()
+		void SaveAll(const Config& c)
 		{
 			for (int i = 0; i < kKeyCount; ++i) {
-				Write(kKeySection[i], kKeyIni[i], std::to_string(cfg.keyVk[i]));
+				Write(kKeySection[i], kKeyIni[i], std::to_string(c.keyVk[i]));
 			}
-			Write("General", "bCursorHold", B(cfg.cursorHold));
-			Write("General", "bVisible", B(cfg.visible));
-			Write("General", "fMouseSpeed", fmt::format("{:.2f}", cfg.mouseSpeed));
-			Write("General", "fUIScale", fmt::format("{:.2f}", cfg.uiScale));
-			Write("Widget", "fPosX", F(cfg.posX));
-			Write("Widget", "fPosY", F(cfg.posY));
-			Write("Widget", "fWidth", fmt::format("{:.0f}", cfg.w));
-			Write("Widget", "fHeight", fmt::format("{:.0f}", cfg.h));
-			Write("Widget", "iScale", std::to_string(cfg.scalePct));
-			Write("Widget", "iOpacity", std::to_string(cfg.opacityPct));
-			Write("Widget", "iCoverButtonsOpacity", std::to_string(cfg.controlsOpacityPct));
-			Write("Widget", "bShowTitleBar", B(cfg.showHeader));
-			Write("Widget", "bShowAlbumArt", B(cfg.showArt));
-			Write("Widget", "bShowProgress", B(cfg.showProgress));
-			Write("Widget", "bShowSound", B(cfg.showSound));
-			Write("Widget", "bLocked", B(cfg.locked));
-			Write("Safety", "bLeaveCursorInCombat", B(cfg.leaveCursorInCombat));
-			Write("Safety", "bNoCursorInCombat", B(cfg.noCursorInCombat));
-			Write("Safety", "iDragDelayMs", std::to_string(cfg.dragDelayMs));
-			Write("Safety", "iDragDistance", std::to_string(cfg.dragDistance));
-			Write("Hiding", "bAutoHideInCombat", B(cfg.autoHideInCombat));
-			Write("Hiding", "fShowAgainAfter", fmt::format("{:.1f}", cfg.showAgainAfter));
-			Write("Hiding", "bHideInMenus", B(cfg.hideInMenus));
-			Write("Hiding", "bHideWhenNoPlayer", B(cfg.hideWhenNoPlayer));
-			Write("Sound", "bMuteGameMusic", B(cfg.muteGameMusic));
-			Write("Sound", "iVolumeStep", std::to_string(cfg.volumeStep));
-			Write("Sound", "sMusicApp", cfg.musicApp);
-			Write("Sound", "bAnyPlayer", B(cfg.anyPlayer));
+			Write("General", "bCursorHold", B(c.cursorHold));
+			Write("General", "bVisible", B(c.visible));
+			Write("General", "fMouseSpeed", fmt::format("{:.2f}", c.mouseSpeed));
+			Write("General", "fUIScale", fmt::format("{:.2f}", c.uiScale));
+			Write("Widget", "fPosX", F(c.posX));
+			Write("Widget", "fPosY", F(c.posY));
+			Write("Widget", "fWidth", fmt::format("{:.0f}", c.w));
+			Write("Widget", "fHeight", fmt::format("{:.0f}", c.h));
+			Write("Widget", "iScale", std::to_string(c.scalePct));
+			Write("Widget", "iOpacity", std::to_string(c.opacityPct));
+			Write("Widget", "iCoverButtonsOpacity", std::to_string(c.controlsOpacityPct));
+			Write("Widget", "bShowTitleBar", B(c.showHeader));
+			Write("Widget", "bShowAlbumArt", B(c.showArt));
+			Write("Widget", "bShowProgress", B(c.showProgress));
+			Write("Widget", "bShowSound", B(c.showSound));
+			Write("Widget", "bLocked", B(c.locked));
+			Write("Safety", "bLeaveCursorInCombat", B(c.leaveCursorInCombat));
+			Write("Safety", "bNoCursorInCombat", B(c.noCursorInCombat));
+			Write("Safety", "iDragDelayMs", std::to_string(c.dragDelayMs));
+			Write("Safety", "iDragDistance", std::to_string(c.dragDistance));
+			Write("Hiding", "bAutoHideInCombat", B(c.autoHideInCombat));
+			Write("Hiding", "fShowAgainAfter", fmt::format("{:.1f}", c.showAgainAfter));
+			Write("Hiding", "bHideInMenus", B(c.hideInMenus));
+			Write("Hiding", "bHideWhenNoPlayer", B(c.hideWhenNoPlayer));
+			Write("Sound", "bMuteGameMusic", B(c.muteGameMusic));
+			Write("Sound", "iVolumeStep", std::to_string(c.volumeStep));
+			Write("Sound", "sMusicApp", c.musicApp);
+			Write("Sound", "bAnyPlayer", B(c.anyPlayer));
+			Write("Debug", "bShowFps", B(c.showFps));
+		}
+
+		// Writing the INI opens and rewrites the file for every key (tens of milliseconds for all of them), so it
+		// happens on a background thread from a copy of the settings - never inside the game's frame.
+		void SaveAllAsync()
+		{
+			static std::mutex saving;  // one save at a time, in order
+			std::thread([c = cfg]() {
+				std::lock_guard lk(saving);
+				SaveAll(c);
+			}).detach();
 		}
 
 		Media::Settings MediaSettings()
@@ -251,6 +265,8 @@ namespace Widget
 		float                g_time = 0.0f;
 		float                g_alpha = 0.0f;   // whole widget fades in/out
 		float                g_combatEndedAt = -100.0f;
+		float                g_fpsAvg = 0.0f;   // game frames per second (smoothed)
+		float                g_costMs = 0.0f;   // time Hearthsong spends in a frame (smoothed)
 		bool                 g_wasInCombat = false;
 		ImFont*              g_fText = nullptr;   // Inter Regular, widget text
 		ImFont*              g_fSemi = nullptr;   // Inter SemiBold, song title
@@ -1975,6 +1991,9 @@ namespace Widget
 					Theme::SectionLabel("Hiding");
 					ToggleRow("Hide in menus", "Hidden while the game is paused (inventory, map, journal...)", &cfg.hideInMenus);
 					ToggleRow("Hide when Spotify isn't open", "Otherwise the widget shows an \"Open Spotify\" button", &cfg.hideWhenNoPlayer);
+					Gap();
+					Theme::SectionLabel("Diagnostics");
+					ToggleRow("Show frame rate", "Top-left corner: the game's frames per second and how long Hearthsong takes of each frame", &cfg.showFps);
 				} else if (g_settingsTab == 2) {
 					Theme::SectionLabel("Keys");
 					Theme::TextItalic("Click a key, then press the new one. Esc keeps the old key, Backspace removes it.");
@@ -2232,6 +2251,7 @@ namespace Widget
 			std::snprintf(g_appBuf, sizeof g_appBuf, "%s", buf);
 		}
 		cfg.anyPlayer = ReadBool("Sound", "bAnyPlayer", false);
+		cfg.showFps = ReadBool("Debug", "bShowFps", false);
 		dbg.hookPresent = ReadBool("Debug", "bHookPresent", true);
 		dbg.inputSink = ReadBool("Debug", "bInputSink", true);
 		dbg.logInput = ReadBool("Debug", "bLogInput", false);
@@ -2318,10 +2338,20 @@ namespace Widget
 		}
 
 		const auto now = std::chrono::steady_clock::now();
+		struct CostTimer  // how long this call takes, for the frame-rate readout
+		{
+			std::chrono::steady_clock::time_point t0;
+			~CostTimer()
+			{
+				const float ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
+				g_costMs = g_costMs <= 0.0f ? ms : g_costMs + (ms - g_costMs) * 0.05f;
+			}
+		} costTimer{ now };
 		float      dt = g_lastFrame.time_since_epoch().count() ? std::chrono::duration<float>(now - g_lastFrame).count() : 1.0f / 60.0f;
 		g_lastFrame = now;
 		dt = std::clamp(dt, 1.0f / 1000.0f, 0.5f);
 		g_time += dt;
+		g_fpsAvg = g_fpsAvg <= 0.0f ? 1.0f / dt : g_fpsAvg + (1.0f / dt - g_fpsAvg) * 0.05f;
 
 		// ---- game state
 		const bool paused = GamePaused();
@@ -2390,7 +2420,7 @@ namespace Widget
 		// save settings a moment after the last change (not in the middle of a drag)
 		if (g_dirty && g_drag.mode == Grab::None && g_time - g_dirtyAt > 0.5f) {
 			g_dirty = false;
-			SaveAll();
+			SaveAllAsync();
 		}
 		// a key chosen in the settings window
 		if (const int slot = g_captureSlot; slot >= 0) {
@@ -2415,7 +2445,9 @@ namespace Widget
 		if (g_alpha <= 0.0f && !g_cursor) {
 			std::lock_guard lk(g_inputMtx);
 			g_input.clear();
-			return;
+			if (!cfg.showFps || !g_gameLoaded) {
+				return;
+			}
 		}
 		if (g_imguiFailed) {
 			return;
@@ -2485,7 +2517,18 @@ namespace Widget
 
 		ImGui_ImplDX11_NewFrame();
 		ImGui::NewFrame();
-		DrawWidget(m);
+		if (g_alpha > 0.0f || g_cursor) {
+			DrawWidget(m);
+		}
+		if (cfg.showFps) {  // diagnostics: top-left corner
+			const std::string t = fmt::format("{:.0f} fps  \xC2\xB7  frame {:.1f} ms  \xC2\xB7  Hearthsong {:.2f} ms", g_fpsAvg, g_fpsAvg > 0.0f ? 1000.0f / g_fpsAvg : 0.0f, g_costMs);
+			auto*             fg = ImGui::GetForegroundDrawList();
+			const float       ts = Theme::S(14.0f);
+			const ImVec2      ts2 = Theme::Body()->CalcTextSizeA(ts, FLT_MAX, 0.0f, t.c_str());
+			const ImVec2      p(Theme::S(12.0f), Theme::S(12.0f));
+			fg->AddRectFilled(p, p + ts2 + ImVec2(Theme::S(16.0f), Theme::S(10.0f)), IM_COL32(10, 10, 12, 200), Theme::S(6.0f));
+			fg->AddText(Theme::Body(), ts, p + ImVec2(Theme::S(8.0f), Theme::S(5.0f)), IM_COL32(238, 234, 226, 255), t.c_str());
+		}
 		if (g_settingsOpen && g_cursor) {
 			DrawSettings(m);
 		}
