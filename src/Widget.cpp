@@ -909,7 +909,6 @@ namespace Widget
 		{
 			const float r = U(12.0f);
 			const int   op = std::clamp(cfg.opacityPct, 30, 100);
-			SoftShadow(a_dl, a_a, a_b, r, U(30.0f), static_cast<int>(160 * op / 100.0f));
 			a_dl->AddRectFilled(a_a, a_b, Col(13, 13, 15, static_cast<int>(255 * op / 100.0f)), r);
 			// glass sheen across the full width with the panel's own rounded corners (no hard side edges)
 			TopGlow(a_dl, a_a + ImVec2(1.0f, 1.0f), a_b - ImVec2(1.0f, 1.0f), (std::max)(0.0f, r - 1.0f), U(120.0f), Col(255, 255, 255, 10));
