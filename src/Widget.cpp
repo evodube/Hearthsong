@@ -842,15 +842,66 @@ namespace Widget
 			a_dl->AddText(a_f, a_size, a_p, a_col, t.c_str());
 		}
 
+		// Soft drop shadow: 1 px rings around the shape (never under it) fading out smoothly, a little lower than
+		// the shape. (10 stacked filled shapes showed as light/dark steps and darkened the see-through panel.)
 		void SoftShadow(ImDrawList* a_dl, ImVec2 a_a, ImVec2 a_b, float a_r, float a_spread, int a_alpha)
 		{
-			const int steps = 10;
-			for (int i = steps; i >= 1; --i) {
-				const float t = static_cast<float>(i) / steps;
-				const float g = a_spread * t;
-				const int   al = static_cast<int>(a_alpha * (1.0f - t) * (1.0f - t) * 0.35f);
-				a_dl->AddRectFilled(a_a - ImVec2(g * 0.6f, g * 0.3f), a_b + ImVec2(g * 0.6f, g), Col(0, 0, 0, al), a_r + g);
+			const int    n = (std::max)(2, static_cast<int>(a_spread + 0.5f));
+			const ImVec2 drop(0.0f, a_spread * 0.18f);
+			for (int i = 1; i <= n; ++i) {
+				const float t = (i - 0.5f) / n;
+				const int   al = static_cast<int>(a_alpha * 0.5f * std::pow(1.0f - t, 2.2f));
+				if (al <= 0) {
+					continue;
+				}
+				const float  g = i - 0.5f;
+				const ImVec2 o = drop * t;
+				a_dl->AddRect(a_a + o - ImVec2(g, g), a_b + o + ImVec2(g, g), Col(0, 0, 0, al), a_r > 0.0f ? a_r + g : 0.0f, 0, 1.5f);
 			}
+		}
+
+		// Vertical gradients on any shape, rounded corners included: draw it, then shade the vertices it added.
+		void FadeVertsY(ImDrawList* a_dl, int a_first, float a_y0, float a_y1, float a_top, float a_bottom)
+		{
+			const float h = (std::max)(1.0f, a_y1 - a_y0);
+			for (int i = a_first; i < a_dl->VtxBuffer.Size; ++i) {
+				ImDrawVert& v = a_dl->VtxBuffer[i];
+				const float t = std::clamp((v.pos.y - a_y0) / h, 0.0f, 1.0f);
+				const float m = a_top + (a_bottom - a_top) * t;
+				const ImU32 al = (v.col >> IM_COL32_A_SHIFT) & 0xFF;
+				v.col = (v.col & ~IM_COL32_A_MASK) | (static_cast<ImU32>(al * m + 0.5f) << IM_COL32_A_SHIFT);
+			}
+		}
+		void TintVertsY(ImDrawList* a_dl, int a_first, float a_y0, float a_y1, ImU32 a_top, ImU32 a_bottom)
+		{
+			const float h = (std::max)(1.0f, a_y1 - a_y0);
+			for (int i = a_first; i < a_dl->VtxBuffer.Size; ++i) {
+				ImDrawVert& v = a_dl->VtxBuffer[i];
+				const float t = std::clamp((v.pos.y - a_y0) / h, 0.0f, 1.0f);
+				ImU32       c = 0;
+				for (int sh = 0; sh < 32; sh += 8) {
+					const float x0 = static_cast<float>((a_top >> sh) & 0xFF), x1 = static_cast<float>((a_bottom >> sh) & 0xFF);
+					float       x = x0 + (x1 - x0) * t;
+					if (sh == IM_COL32_A_SHIFT) {
+						x *= static_cast<float>((v.col >> IM_COL32_A_SHIFT) & 0xFF) / 255.0f;  // keep the soft anti-aliased edge
+					}
+					c |= static_cast<ImU32>(x + 0.5f) << sh;
+				}
+				v.col = c;
+			}
+		}
+		// Highlight (or shade) across the top of a rounded shape: same rounded corners, fades to nothing by a_h.
+		void TopGlow(ImDrawList* a_dl, ImVec2 a_a, ImVec2 a_b, float a_r, float a_h, ImU32 a_col)
+		{
+			const float h = (std::min)(a_h, a_b.y - a_a.y);
+			const int   first = a_dl->VtxBuffer.Size;
+			a_dl->AddRectFilled(a_a, ImVec2(a_b.x, a_a.y + h), a_col, a_r, ImDrawFlags_RoundCornersTop);
+			FadeVertsY(a_dl, first, a_a.y, a_a.y + h, 1.0f, 0.0f);
+		}
+		// 1 px outline on the pixel grid (not between two pixels, which blurs it to a soft 2 px line)
+		void CrispRect(ImDrawList* a_dl, ImVec2 a_a, ImVec2 a_b, ImU32 a_col, float a_r)
+		{
+			a_dl->AddRect(ImVec2(std::floor(a_a.x) + 0.5f, std::floor(a_a.y) + 0.5f), ImVec2(std::ceil(a_b.x) - 0.5f, std::ceil(a_b.y) - 0.5f), a_col, a_r, 0, 1.0f);
 		}
 
 		// Smoked-glass panel of Hearthframe's Modern look
@@ -860,9 +911,9 @@ namespace Widget
 			const int   op = std::clamp(cfg.opacityPct, 30, 100);
 			SoftShadow(a_dl, a_a, a_b, r, U(30.0f), static_cast<int>(160 * op / 100.0f));
 			a_dl->AddRectFilled(a_a, a_b, Col(13, 13, 15, static_cast<int>(255 * op / 100.0f)), r);
-			a_dl->AddRectFilledMultiColor(ImVec2(a_a.x + r, a_a.y + 1), ImVec2(a_b.x - r, (std::min)(a_b.y - r, a_a.y + U(120.0f))), Col(255, 255, 255, 10),
-				Col(255, 255, 255, 10), Col(255, 255, 255, 0), Col(255, 255, 255, 0));
-			a_dl->AddRect(a_a, a_b, a_cursor ? Col(218, 184, 124, 120) : Col(255, 255, 255, 26), r, 0, U(1.0f));
+			// glass sheen across the full width with the panel's own rounded corners (no hard side edges)
+			TopGlow(a_dl, a_a + ImVec2(1.0f, 1.0f), a_b - ImVec2(1.0f, 1.0f), (std::max)(0.0f, r - 1.0f), U(120.0f), Col(255, 255, 255, 10));
+			CrispRect(a_dl, a_a, a_b, a_cursor ? Col(218, 184, 124, 120) : Col(255, 255, 255, 26), r);
 			// warm accent line along the top edge, brightest in the middle
 			const float mid = (a_a.x + a_b.x) * 0.5f, half = (a_b.x - a_a.x) * 0.32f;
 			const ImU32 acc = Col(218, 184, 124, 200), clear = Col(218, 184, 124, 0);
@@ -996,18 +1047,19 @@ namespace Widget
 				break;
 			case BtnStyle::Flat:
 				dl->AddRectFilled(a, b, Col(255, 255, 255, held ? 28 : static_cast<int>(8 + 10 * h)), r);
-				dl->AddRect(a, b, hov ? kGold() : Col(255, 255, 255, 44), r, 0, U(1.0f));
+				CrispRect(dl, a, b, hov ? kGold() : Col(255, 255, 255, 44), r);
 				icon = a_enabled ? Col(232, 226, 216) : Col(255, 255, 255, 60);
 				break;
 			case BtnStyle::Gold:
 				{
-					const ImU32 top = held ? Col(194, 160, 104) : Col(226, 196, 142), bot = Col(0, 0, 0, 40);
+					const ImU32 top = held ? Col(200, 166, 110) : Col(232, 204, 152), bot = held ? Col(176, 142, 90) : Col(192, 156, 98);
 					if (h > 0.01f) {
 						dl->AddRect(a - ImVec2(U(2), U(2)), b + ImVec2(U(2), U(2)), Col(218, 184, 124, static_cast<int>(70 * h)), r + U(2), 0, U(3.0f));
 					}
+					const int first = dl->VtxBuffer.Size;
 					dl->AddRectFilled(a, b, top, r);
-					dl->AddRectFilledMultiColor(ImVec2(a.x + r, (a.y + b.y) * 0.5f), ImVec2(b.x - r, b.y - 1), Col(0, 0, 0, 0), Col(0, 0, 0, 0), bot, bot);
-					dl->AddRect(a, b, Col(236, 210, 162), r, 0, U(1.0f));
+					TintVertsY(dl, first, a.y, b.y, top, bot);  // one rounded gradient (was a square band inside the rounded button)
+					CrispRect(dl, a, b, Col(236, 210, 162), r);
 					icon = a_enabled ? Col(26, 21, 14) : Col(26, 21, 14, 120);
 					break;
 				}
@@ -1083,8 +1135,16 @@ namespace Widget
 			}
 			const float gx = bx0 + (bx1 - bx0) * std::clamp(frac, 0.0f, 1.0f);
 			dl->AddRectFilled(ImVec2(bx0, a_y - U(1.0f)), ImVec2(bx1, a_y + U(1.0f)), Col(255, 255, 255, 34), U(1.0f));
-			dl->AddRectFilledMultiColor(ImVec2(bx0, a_y - U(4.0f)), ImVec2(gx, a_y), Col(218, 184, 124, 0), Col(218, 184, 124, static_cast<int>(22 + 30 * h)),
-				Col(218, 184, 124, static_cast<int>(22 + 30 * h)), Col(218, 184, 124, 0));
+			{  // soft glow around the filled part: 1 px lines fading out above and below (no hard band edge)
+				const int   peak = static_cast<int>(22 + 30 * h);
+				const int   reach = (std::max)(2, static_cast<int>(U(4.0f) + 0.5f));
+				for (int d = 1; d <= reach; ++d) {
+					const int al = static_cast<int>(peak * std::pow(1.0f - static_cast<float>(d) / (reach + 1), 2.0f));
+					for (const float yy : { a_y - U(1.0f) - d, a_y + U(1.0f) + d - 1.0f }) {
+						dl->AddRectFilledMultiColor(ImVec2(bx0, yy), ImVec2(gx, yy + 1.0f), Col(218, 184, 124, 0), Col(218, 184, 124, al), Col(218, 184, 124, al), Col(218, 184, 124, 0));
+					}
+				}
+			}
 			dl->AddRectFilledMultiColor(ImVec2(bx0, a_y - U(1.0f)), ImVec2(gx, a_y + U(1.0f)), kGoldDim(), kGold(), kGold(), kGoldDim());
 			const float hw = U(2.0f + 1.0f * h), hh = U(5.0f + 2.0f * h);
 			dl->AddRectFilled(ImVec2(gx - hw, a_y - hh), ImVec2(gx + hw, a_y + hh), kGold(), hw);

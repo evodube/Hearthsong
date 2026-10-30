@@ -622,15 +622,68 @@ namespace Theme
 		ImU32 Dark(ImU32 a_c, float a_t) { return Mix(a_c, IM_COL32(0, 0, 0, (a_c >> 24) & 0xFF), a_t); }
 
 		// Layered soft shadow, offset down-right.
+		// Soft drop shadow: 1 px rings around the shape (never under it), fading out smoothly, a little lower than
+		// the shape. (Stacked filled shapes showed as light/dark steps and darkened see-through panels.)
 		void SoftShadow(ImDrawList* a_dl, const ImVec2& a_a, const ImVec2& a_b, float a_r, float a_size, int a_alpha = 70)
 		{
-			const int   n = 7;
-			const ImVec2 off(a_size * 0.25f, a_size * 0.45f);
-			for (int i = n; i >= 1; --i) {
-				const float g = a_size * i / n;
-				const int   al = static_cast<int>(a_alpha * (1.0f - static_cast<float>(i - 1) / n) / n * 2.2f);
-				a_dl->AddRectFilled(a_a + off - ImVec2(g, g) * 0.5f, a_b + off + ImVec2(g, g) * 0.5f, IM_COL32(0, 0, 0, al), a_r + g * 0.5f);
+			const int    n = (std::max)(2, static_cast<int>(a_size + 0.5f));
+			const ImVec2 drop(0.0f, a_size * 0.18f);
+			for (int i = 1; i <= n; ++i) {
+				const float t = (i - 0.5f) / n;
+				const int   al = static_cast<int>(a_alpha * 0.5f * std::pow(1.0f - t, 2.2f));
+				if (al <= 0) {
+					continue;
+				}
+				const float  g = i - 0.5f;
+				const ImVec2 o = drop * t;
+				a_dl->AddRect(a_a + o - ImVec2(g, g), a_b + o + ImVec2(g, g), IM_COL32(0, 0, 0, al), a_r > 0.0f ? a_r + g : 0.0f, 0, 1.5f);
 			}
+		}
+
+		// Vertical gradients on any shape (rounded corners included): draw the shape, then shade the vertices it added.
+		// Alpha: multiplies each vertex's alpha from a_top to a_bottom (0..1) between a_y0 and a_y1.
+		void FadeVertsY(ImDrawList* a_dl, int a_first, float a_y0, float a_y1, float a_top, float a_bottom)
+		{
+			const float h = (std::max)(1.0f, a_y1 - a_y0);
+			for (int i = a_first; i < a_dl->VtxBuffer.Size; ++i) {
+				ImDrawVert& v = a_dl->VtxBuffer[i];
+				const float t = std::fmin(1.0f, std::fmax(0.0f, (v.pos.y - a_y0) / h));
+				const float m = a_top + (a_bottom - a_top) * t;
+				const ImU32 al = (v.col >> IM_COL32_A_SHIFT) & 0xFF;
+				v.col = (v.col & ~IM_COL32_A_MASK) | (static_cast<ImU32>(al * m + 0.5f) << IM_COL32_A_SHIFT);
+			}
+		}
+		// Colour: blends each vertex's colour from a_top to a_bottom, keeping its alpha (anti-aliased edges stay soft).
+		void TintVertsY(ImDrawList* a_dl, int a_first, float a_y0, float a_y1, ImU32 a_top, ImU32 a_bottom)
+		{
+			const float h = (std::max)(1.0f, a_y1 - a_y0);
+			for (int i = a_first; i < a_dl->VtxBuffer.Size; ++i) {
+				ImDrawVert& v = a_dl->VtxBuffer[i];
+				const float t = std::fmin(1.0f, std::fmax(0.0f, (v.pos.y - a_y0) / h));
+				ImU32       c = 0;
+				for (int sh = 0; sh < 24; sh += 8) {
+					const float x = ((a_top >> sh) & 0xFF) + ((((a_bottom >> sh) & 0xFF) - static_cast<float>((a_top >> sh) & 0xFF)) * t);
+					c |= static_cast<ImU32>(x + 0.5f) << sh;
+				}
+				const float ta = static_cast<float>((a_top >> IM_COL32_A_SHIFT) & 0xFF), ba = static_cast<float>((a_bottom >> IM_COL32_A_SHIFT) & 0xFF);
+				const float own = static_cast<float>((v.col >> IM_COL32_A_SHIFT) & 0xFF) / 255.0f;
+				c |= static_cast<ImU32>((ta + (ba - ta) * t) * own + 0.5f) << IM_COL32_A_SHIFT;
+				v.col = c;
+			}
+		}
+		// A highlight (or shade) across the top of a rounded shape: same rounded corners, fades to nothing by a_h.
+		void TopGlow(ImDrawList* a_dl, const ImVec2& a_a, const ImVec2& a_b, float a_r, float a_h, ImU32 a_col)
+		{
+			const float  h = std::fmin(a_h, a_b.y - a_a.y);
+			const int    first = a_dl->VtxBuffer.Size;
+			a_dl->AddRectFilled(a_a, ImVec2(a_b.x, a_a.y + h), a_col, a_r, ImDrawFlags_RoundCornersTop);
+			FadeVertsY(a_dl, first, a_a.y, a_a.y + h, 1.0f, 0.0f);
+		}
+		// Pixel-crisp 1 px outline: the line sits on the pixel grid instead of between two pixels.
+		void CrispRect(ImDrawList* a_dl, const ImVec2& a_a, const ImVec2& a_b, ImU32 a_col, float a_r, float a_t)
+		{
+			const ImVec2 a(std::floor(a_a.x) + 0.5f, std::floor(a_a.y) + 0.5f), b(std::ceil(a_b.x) - 0.5f, std::ceil(a_b.y) - 0.5f);
+			a_dl->AddRect(a, b, a_col, a_r, 0, a_t);
 		}
 
 		// Raised (light top-left, dark bottom-right) or sunken edge.
@@ -995,9 +1048,10 @@ namespace Theme
 			SoftShadow(bg, a, b, wr, S(40.0f), 160);  // deep, soft shadow under the panel
 			dl->PushClipRect(a, b, false);
 			dl->AddRectFilled(a, b, L->winEdge, wr);
-			// smoked-glass sheen: lighter towards the top
-			dl->AddRectFilledMultiColor(ImVec2(a.x + wr, a.y + 1), ImVec2(b.x - wr, a.y + S(160.0f)), IM_COL32(255, 255, 255, 10), IM_COL32(255, 255, 255, 10), IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 0));
-			dl->AddRect(a, b, IM_COL32(255, 255, 255, 26), wr, 0, S(1.0f));
+			// smoked-glass sheen: lighter towards the top, across the full width with the window's rounded corners
+			// (it used to stop a corner-radius in from each side, leaving two hard vertical edges at the top)
+			TopGlow(dl, a + ImVec2(1.0f, 1.0f), b - ImVec2(1.0f, 1.0f), (std::max)(0.0f, wr - 1.0f), S(160.0f), IM_COL32(255, 255, 255, 10));
+			CrispRect(dl, a, b, IM_COL32(255, 255, 255, 26), wr, 1.0f);
 			// warm accent line along the top edge, brightest in the middle
 			const float  mid = (a.x + b.x) * 0.5f, half = (b.x - a.x) * 0.32f;
 			const ImU32  acc = WithAlpha(L->accent, 200), clear = WithAlpha(L->accent, 0);
@@ -1506,8 +1560,8 @@ namespace Theme
 		if (dark && Modern()) {  // recessed smoked glass
 			const float mr = S(10.0f);
 			dl->AddRectFilled(a, b, IM_COL32(0, 0, 0, 72), mr);
-			dl->AddRectFilledMultiColor(ImVec2(a.x + mr, a.y), ImVec2(b.x - mr, a.y + S(14.0f)), IM_COL32(0, 0, 0, 60), IM_COL32(0, 0, 0, 60), IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0));
-			dl->AddRect(a, b, IM_COL32(255, 255, 255, 16), mr, 0, S(1.0f));
+			TopGlow(dl, a, b, mr, S(14.0f), IM_COL32(0, 0, 0, 60));  // inner shade along the top, following the rounded corners
+			CrispRect(dl, a, b, IM_COL32(255, 255, 255, 16), mr, 1.0f);
 		} else if (dark) {  // the gallery wall: dark recessed stone, gold inset line
 			dl->AddRectFilled(a, b, C(19, 17, 15));
 			if (g_texGrain) {
@@ -1747,12 +1801,14 @@ namespace Theme
 					if (hovd) {
 						dl->AddRect(a - ImVec2(S(2), S(2)), b + ImVec2(S(2), S(2)), WithAlpha(L->accent, 70), a_r + S(2), 0, S(3.0f));
 					}
-					dl->AddRectFilled(a, b, Mix(top, bot, 0.5f), a_r);
-					dl->AddRectFilledMultiColor(ImVec2(a.x + a_r, a.y + 1), ImVec2(b.x - a_r, (a.y + b.y) * 0.5f), IM_COL32(255, 255, 255, 40), IM_COL32(255, 255, 255, 40), IM_COL32(255, 255, 255, 0), IM_COL32(255, 255, 255, 0));
+					const int first = dl->VtxBuffer.Size;
+					dl->AddRectFilled(a, b, top, a_r);
+					TintVertsY(dl, first, a.y, b.y, top, bot);  // top-to-bottom gradient that follows the rounded corners
+					TopGlow(dl, a + ImVec2(1.0f, 1.0f), ImVec2(b.x - 1.0f, b.y), (std::max)(0.0f, a_r - 1.0f), (b.y - a.y) * 0.5f, IM_COL32(255, 255, 255, 40));
 				} else {
 					dl->AddRectFilled(a, b, fill, a_r);
 				}
-				dl->AddRect(a, b, gold ? Bright(fill, 0.25f) : (hovd ? L->accent : border), a_r, 0, S(1.0f));
+				CrispRect(dl, a, b, gold ? Bright(fill, 0.25f) : (hovd ? L->accent : border), a_r, 1.0f);
 				dl->ChannelsMerge();
 				return pressed;
 			}
@@ -1842,8 +1898,16 @@ namespace Theme
 				const float h = Ease(ImGui::GetItemID(), a_hov, 16.0f);
 				dl->AddRectFilled(ImVec2(x0, y - S(1.0f)), ImVec2(x1, y + S(1.0f)), IM_COL32(255, 255, 255, 34), S(1.0f));
 				// soft glow under the filled part
-				dl->AddRectFilledMultiColor(ImVec2(x0, y - S(5.0f)), ImVec2(gx, y), WithAlpha(L->accent, 0), WithAlpha(L->accent, static_cast<int>(26 + 30 * h)), WithAlpha(L->accent, static_cast<int>(26 + 30 * h)), WithAlpha(L->accent, 0));
-				dl->AddRectFilledMultiColor(ImVec2(x0, y), ImVec2(gx, y + S(5.0f)), WithAlpha(L->accent, 0), WithAlpha(L->accent, static_cast<int>(26 + 30 * h)), WithAlpha(L->accent, 0), WithAlpha(L->accent, 0));
+				{  // 1 px lines fading out above and below the track (no hard band edge)
+					const int peak = static_cast<int>(26 + 30 * h);
+					const int reach = (std::max)(2, static_cast<int>(S(5.0f) + 0.5f));
+					for (int d = 1; d <= reach; ++d) {
+						const int al = static_cast<int>(peak * std::pow(1.0f - static_cast<float>(d) / (reach + 1), 2.0f));
+						for (const float yy : { y - S(1.0f) - d, y + S(1.0f) + d - 1.0f }) {
+							dl->AddRectFilledMultiColor(ImVec2(x0, yy), ImVec2(gx, yy + 1.0f), WithAlpha(L->accent, 0), WithAlpha(L->accent, al), WithAlpha(L->accent, al), WithAlpha(L->accent, 0));
+						}
+					}
+				}
 				dl->AddRectFilledMultiColor(ImVec2(x0, y - S(1.0f)), ImVec2(gx, y + S(1.0f)), L->accentDim, L->accent, L->accent, L->accentDim);
 				const float hw = S(2.0f + 1.0f * h), hh = S(9.0f + 3.0f * h);
 				if (h > 0.01f) {
