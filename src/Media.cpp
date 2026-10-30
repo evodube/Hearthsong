@@ -32,6 +32,7 @@
 #include <atomic>
 #include <cctype>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -191,7 +192,96 @@ namespace Media
 		}
 
 		// ------------------------------------------------------------ album art
-		bool ReadArt(const wss::IRandomAccessStreamReference& a_ref, std::vector<std::uint8_t>& a_rgba, int& a_w, int& a_h)
+		struct Box
+		{
+			int x = 0, y = 0, w = 0, h = 0;
+		};
+
+		// Spotify hands Windows the cover on a flat dark background with its logo and name underneath.
+		// Find the cover itself: rows/columns mostly different from the background colour. Returns false
+		// (keep the whole picture) when the picture doesn't look like that.
+		bool FindCover(const std::uint8_t* a_px, int a_w, int a_h, Box& a_out)
+		{
+			if (a_w < 32 || a_h < 32) {
+				return false;
+			}
+			auto at = [&](int x, int y) { return a_px + (static_cast<std::size_t>(y) * a_w + x) * 4; };
+			// background: the four corners must agree
+			const std::uint8_t* c[4] = { at(1, 1), at(a_w - 2, 1), at(1, a_h - 2), at(a_w - 2, a_h - 2) };
+			for (int i = 1; i < 4; ++i) {
+				for (int k = 0; k < 3; ++k) {
+					if (std::abs(static_cast<int>(c[i][k]) - c[0][k]) > 12) {
+						return false;
+					}
+				}
+			}
+			auto differs = [&](int x, int y) {
+				const auto* p = at(x, y);
+				return std::abs(p[0] - c[0][0]) + std::abs(p[1] - c[0][1]) + std::abs(p[2] - c[0][2]) > 36;
+			};
+			// rows where much of the picture isn't background; the cover is the longest unbroken run of them
+			// (the logo and name below it are separated from the cover by plain background rows)
+			int top = -1, bottom = -1, runStart = -1;
+			for (int y = 0; y <= a_h; ++y) {
+				bool cover = false;
+				if (y < a_h) {
+					int n = 0;
+					for (int x = 0; x < a_w; ++x) {
+						n += differs(x, y);
+					}
+					cover = n >= a_w * 4 / 10;
+				}
+				if (cover && runStart < 0) {
+					runStart = y;
+				} else if (!cover && runStart >= 0) {
+					if (top < 0 || (y - 1) - runStart > bottom - top) {
+						top = runStart;
+						bottom = y - 1;
+					}
+					runStart = -1;
+				}
+			}
+			if (top < 0) {
+				return false;
+			}
+			// same for the columns within those rows (longest unbroken run)
+			int left = -1, right = -1;
+			runStart = -1;
+			for (int x = 0; x <= a_w; ++x) {
+				bool cover = false;
+				if (x < a_w) {
+					int n = 0;
+					for (int y = top; y <= bottom; ++y) {
+						n += differs(x, y);
+					}
+					cover = n >= (bottom - top + 1) * 4 / 10;
+				}
+				if (cover && runStart < 0) {
+					runStart = x;
+				} else if (!cover && runStart >= 0) {
+					if (left < 0 || (x - 1) - runStart > right - left) {
+						left = runStart;
+						right = x - 1;
+					}
+					runStart = -1;
+				}
+			}
+			if (left < 0) {
+				return false;
+			}
+			// covers are square: take the width (a dark cover edge can shorten the rows found), keep it inside
+			const int side = right - left + 1;
+			if (side < a_w * 3 / 10 || side > a_w - 2 || top + side > a_h) {
+				return false;  // no real margin around it: not the branded layout
+			}
+			if (bottom - top + 1 < side * 6 / 10) {
+				return false;
+			}
+			a_out = { left, top, side, side };
+			return true;
+		}
+
+		bool ReadArt(const wss::IRandomAccessStreamReference& a_ref, bool a_spotify, std::vector<std::uint8_t>& a_rgba, int& a_w, int& a_h)
 		{
 			if (!a_ref) {
 				return false;
@@ -210,14 +300,22 @@ namespace Media
 			if (!px) {
 				return false;
 			}
+			// Spotify: just the cover, without the dark border and the logo/name under it
+			Box box{ 0, 0, w, h };
+			if (a_spotify) {
+				if (Box cover; FindCover(px, w, h, cover)) {
+					spdlog::info("Album art: cover {}x{} at {},{} cut out of Spotify's {}x{} picture", cover.w, cover.h, cover.x, cover.y, w, h);
+					box = cover;
+				}
+			}
 			// keep it small: nearest-neighbour down to 512 px on the long side
-			const int step = (std::max)(1, ((std::max)(w, h) + 511) / 512);
-			a_w = w / step;
-			a_h = h / step;
+			const int step = (std::max)(1, ((std::max)(box.w, box.h) + 511) / 512);
+			a_w = box.w / step;
+			a_h = box.h / step;
 			a_rgba.resize(static_cast<std::size_t>(a_w) * a_h * 4);
 			for (int y = 0; y < a_h; ++y) {
 				for (int x = 0; x < a_w; ++x) {
-					std::memcpy(&a_rgba[(static_cast<std::size_t>(y) * a_w + x) * 4], px + (static_cast<std::size_t>(y * step) * w + x * step) * 4, 4);
+					std::memcpy(&a_rgba[(static_cast<std::size_t>(y) * a_w + x) * 4], px + (static_cast<std::size_t>(box.y + y * step) * w + box.x + x * step) * 4, 4);
 				}
 			}
 			stbi_image_free(px);
@@ -451,7 +549,7 @@ namespace Media
 								int                       w = 0, h = 0;
 								bool                      ok = false;
 								try {
-									ok = ReadArt(props.Thumbnail(), px, w, h);
+									ok = ReadArt(props.Thumbnail(), Lower(snap.app).find("spotify") != std::string::npos, px, w, h);
 								} catch (...) {
 									ok = false;
 								}
