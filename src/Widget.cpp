@@ -29,13 +29,14 @@ namespace Widget
 			kKeyPrevious,
 			kKeyVolUp,
 			kKeyVolDown,
+			kKeySettings,
 			kKeyCount
 		};
-		const char* const kKeyIni[kKeyCount] = { "iToggleKey", "iCursorKey", "iUndoKey", "iPlayPauseKey", "iNextKey", "iPreviousKey", "iVolumeUpKey", "iVolumeDownKey" };
-		const char* const kKeySection[kKeyCount] = { "General", "General", "Keys", "Keys", "Keys", "Keys", "Keys", "Keys" };
-		const int         kKeyDefault[kKeyCount] = { VK_F7, VK_F6, 'Z', 0, 0, 0, 0, 0 };
+		const char* const kKeyIni[kKeyCount] = { "iToggleKey", "iCursorKey", "iUndoKey", "iPlayPauseKey", "iNextKey", "iPreviousKey", "iVolumeUpKey", "iVolumeDownKey", "iSettingsKey" };
+		const char* const kKeySection[kKeyCount] = { "General", "General", "Keys", "Keys", "Keys", "Keys", "Keys", "Keys", "General" };
+		const int         kKeyDefault[kKeyCount] = { VK_F7, VK_F6, 'Z', 0, 0, 0, 0, 0, VK_F10 };
 		const char* const kKeyLabel[kKeyCount] = { "Show / hide widget", "Cursor mode", "Undo move (with Ctrl)", "Play / pause", "Next track", "Previous track",
-			"Volume up", "Volume down" };
+			"Volume up", "Volume down", "Settings window" };
 		const char* const kKeyHelp[kKeyCount] = {
 			"Shows or hides the widget. Works any time you're playing.",
 			"Shows a cursor so you can click, drag and resize the widget. While it's on, the game and other mods get no keys or clicks.",
@@ -45,6 +46,7 @@ namespace Widget
 			"Works without the cursor.",
 			"Raises the music app's volume in the Windows volume mixer by the volume step.",
 			"Lowers the music app's volume in the Windows volume mixer by the volume step.",
+			"Opens the widget's settings (the cursor comes up with them). Press it again to close them.",
 		};
 
 		struct Config
@@ -242,6 +244,8 @@ namespace Widget
 		std::atomic<bool> g_toggleVisible{ false };
 		std::atomic<bool> g_undoRequest{ false };
 		std::atomic<bool> g_escRequest{ false };
+		std::atomic<bool> g_settingsKey{ false };  // settings key pressed (applied in Present)
+		bool              g_cursorForSettings = false;  // the cursor came up for the settings key: it goes away with them
 		std::atomic<bool> g_shiftDown{ false }, g_ctrlDown{ false }, g_altDown{ false };
 		std::atomic<int>  g_captureSlot{ -1 };       // settings: waiting for a key for this slot
 		std::atomic<int>  g_capturedVk{ 0 };         // result (-1 cancelled, -2 cleared)
@@ -439,6 +443,7 @@ namespace Widget
 			}
 			if (!a_on) {
 				g_settingsOpen = false;
+				g_cursorForSettings = false;
 				g_drag = {};
 				g_captureSlot = -1;
 				std::lock_guard lk(g_inputMtx);
@@ -597,6 +602,15 @@ namespace Widget
 						continue;
 					}
 					if (down && !typing && !ConsoleOpen()) {
+						if (code == g_keyDik[kKeySettings] && code != 0) {
+							if (g_cursor) {
+								g_settingsKey = true;  // open or close the settings window
+							} else if (CursorAllowed(true)) {
+								g_wantCursor = true;
+								g_settingsKey = true;
+							}
+							continue;
+						}
 						if (code == g_keyDik[kKeyToggle] && code != 0 && !g_pausedInput) {
 							g_toggleVisible = true;
 							continue;
@@ -785,7 +799,7 @@ namespace Widget
 				case InputMsg::Kind::Wheel:
 					if (g_ctrlDown && g_wheelScale) {
 						if (!cfg.locked) {
-							cfg.scalePct = std::clamp(cfg.scalePct + static_cast<int>(m.y) * 5, 10, 200);
+							cfg.scalePct = std::clamp(cfg.scalePct + static_cast<int>(m.y) * 5, 50, 100);
 							MarkDirty();
 							g_pendingFonts = true;
 						}
@@ -1905,7 +1919,7 @@ namespace Widget
 					ImGui::SetCursorPosX(ImGui::GetCursorPosX() + SS(320.0f));
 					Theme::TextItalic("Now: %s, %.0f x %.0f", LayoutName(l), cfg.w, cfg.h);
 					Row("Scale", "Makes everything in the widget bigger or smaller. Ctrl + mouse wheel over the widget works too.");
-					if (Theme::SliderInt("##scale", &cfg.scalePct, 10, 200, "%d%%", ctl)) {
+					if (Theme::SliderInt("##scale", &cfg.scalePct, 50, 100, "%d%%", ctl)) {
 						MarkDirty();
 						g_pendingFonts = true;  // remade once the slider is let go
 					}
@@ -2226,7 +2240,7 @@ namespace Widget
 		cfg.posY = ReadFloat("Widget", "fPosY", 0.06f, 0.0f, 1.0f);
 		cfg.w = ReadFloat("Widget", "fWidth", kDefW, kMinW, kMaxW);
 		cfg.h = ReadFloat("Widget", "fHeight", kDefH, kMinH, kMaxH);
-		cfg.scalePct = ReadInt("Widget", "iScale", 100, 10, 200);
+		cfg.scalePct = ReadInt("Widget", "iScale", 100, 50, 100);
 		cfg.opacityPct = ReadInt("Widget", "iOpacity", 95, 30, 100);
 		cfg.controlsOpacityPct = ReadInt("Widget", "iCoverButtonsOpacity", 100, 10, 100);
 		cfg.showHeader = ReadBool("Widget", "bShowTitleBar", true);
@@ -2496,9 +2510,22 @@ namespace Widget
 				io.AddMouseButtonEvent(b, false);
 			}
 		}
+		const bool lastCursorBeforeKey = lastCursor;  // was the cursor already up before this frame?
 		lastCursor = g_cursor;
 		if (g_cursor) {
 			DrainInput();
+			if (g_settingsKey.exchange(false)) {
+				if (g_settingsOpen) {
+					g_settingsOpen = false;
+					if (g_cursorForSettings) {
+						g_wantCursor = false;  // the cursor came up for the settings: it goes with them
+					}
+					g_cursorForSettings = false;
+				} else {
+					g_cursorForSettings = !lastCursorBeforeKey;
+					g_settingsOpen = true;
+				}
+			}
 			if (g_undoRequest.exchange(false)) {
 				Undo();
 			}

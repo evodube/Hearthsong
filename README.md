@@ -20,9 +20,10 @@ Spotify too. Spotify has to be open on the same PC.
 | --- | --- |
 | **F7** | Show / hide the widget |
 | **F6** | Cursor mode: a cursor to click, drag and resize the widget (Esc or F6 again puts it away) |
+| **F10** | Settings window (the cursor comes up with it; F10 again closes both) |
 | **Ctrl + Z** | In cursor mode: undo the last move or resize |
 
-Every key can be changed in the settings (the gear on the widget) or in `Hearthsong.ini`. Optional
+Every key can be changed in the settings (F10, or the gear on the widget) or in `Hearthsong.ini`. Optional
 play/pause, next, previous and volume keys work without the cursor.
 
 - **While playing** (no cursor) the widget shows just the music: no settings/close buttons and no volume section,
@@ -30,7 +31,7 @@ play/pause, next, previous and volume keys work without the cursor.
 - **Move:** in cursor mode, drag anywhere on the widget (except a button or slider).
 - **Resize:** drag any edge or corner. Wide and short becomes a horizontal bar, tall and narrow a portrait
   layout. Parts that don't fit (volume, album art) step aside instead of being cut off.
-- **Scale / opacity / parts:** in the settings window, or Ctrl + mouse wheel over the widget for the scale.
+- **Scale (50 - 100 %) / opacity / parts:** in the settings window, or Ctrl + mouse wheel over the widget for the scale.
 
 ### Safeguards against moving it by accident
 
