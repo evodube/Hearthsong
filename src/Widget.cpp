@@ -767,7 +767,7 @@ namespace Widget
 				case InputMsg::Kind::Wheel:
 					if (g_ctrlDown && g_wheelScale) {
 						if (!cfg.locked) {
-							cfg.scalePct = std::clamp(cfg.scalePct + static_cast<int>(m.y) * 5, 60, 200);
+							cfg.scalePct = std::clamp(cfg.scalePct + static_cast<int>(m.y) * 5, 10, 200);
 							MarkDirty();
 							g_pendingFonts = true;
 						}
@@ -1206,13 +1206,14 @@ namespace Widget
 		void ArtBox(ImDrawList* a_dl, ImVec2 a_a, float a_size, float a_r, bool a_label)
 		{
 			const ImVec2 b = a_a + ImVec2(a_size, a_size);
-			SoftShadow(a_dl, a_a, b, a_r, U(10.0f), 140);
+			const float  op = std::clamp(cfg.opacityPct, 30, 100) / 100.0f;  // the cover fades with the widget's opacity
+			SoftShadow(a_dl, a_a, b, a_r, U(10.0f), static_cast<int>(140 * op));
 			if (g_art) {
-				a_dl->AddImageRounded(reinterpret_cast<ImTextureID>(g_art), a_a, b, ImVec2(0, 0), ImVec2(1, 1), Col(255, 255, 255), a_r);
+				a_dl->AddImageRounded(reinterpret_cast<ImTextureID>(g_art), a_a, b, ImVec2(0, 0), ImVec2(1, 1), Col(255, 255, 255, static_cast<int>(255 * op)), a_r);
 				a_dl->AddRect(a_a, b, Col(255, 255, 255, 26), a_r, 0, U(1.0f));
 				return;
 			}
-			a_dl->AddRectFilled(a_a, b, Col(10, 10, 12), a_r);
+			a_dl->AddRectFilled(a_a, b, Col(10, 10, 12, static_cast<int>(255 * op)), a_r);
 			a_dl->AddRect(a_a, b, Col(255, 255, 255, 26), a_r, 0, U(1.0f));
 			const ImVec2 c = a_a + ImVec2(a_size, a_size) * 0.5f - ImVec2(0, a_label ? U(6.0f) : 0.0f);
 			IconNote(a_dl, c, (std::min)(a_size * 0.4f, U(36.0f)), kFaint());
@@ -1602,7 +1603,7 @@ namespace Widget
 
 		Grab HitTest(ImVec2 a_p, ImVec2 a_a, ImVec2 a_b)
 		{
-			const float e = U(6.0f), c = U(14.0f);
+			const float e = (std::max)(4.0f, U(6.0f)), c = (std::max)(10.0f, U(14.0f));  // grabbable at any scale
 			const bool  inX = a_p.x >= a_a.x - e && a_p.x <= a_b.x + e, inY = a_p.y >= a_a.y - e && a_p.y <= a_b.y + e;
 			if (!inX || !inY) {
 				return Grab::None;
@@ -1866,11 +1867,11 @@ namespace Widget
 					ImGui::SetCursorPosX(ImGui::GetCursorPosX() + SS(320.0f));
 					Theme::TextItalic("Now: %s, %.0f x %.0f", LayoutName(l), cfg.w, cfg.h);
 					Row("Scale", "Makes everything in the widget bigger or smaller. Ctrl + mouse wheel over the widget works too.");
-					if (Theme::SliderInt("##scale", &cfg.scalePct, 60, 200, "%d%%", ctl)) {
+					if (Theme::SliderInt("##scale", &cfg.scalePct, 10, 200, "%d%%", ctl)) {
 						MarkDirty();
 						g_pendingFonts = true;  // remade once the slider is let go
 					}
-					Row("Opacity", "How see-through the widget's background is");
+					Row("Opacity", "How see-through the widget's background and album cover are (text and buttons stay solid)");
 					if (Theme::SliderInt("##opacity", &cfg.opacityPct, 30, 100, "%d%%", ctl)) {
 						MarkDirty();
 					}
@@ -2095,9 +2096,10 @@ namespace Widget
                 fc.OversampleV = 2;
                 return io.Fonts->AddFontFromFileTTF(a_path.c_str(), a_px, &fc, GlyphRanges());
 			};
-			g_fText = load(uiReg, 13.0f * g_fontK);
-			g_fSemi = load(uiSemi, 17.0f * g_fontK);
-			g_fTitle = load(display, 18.0f * g_fontK);
+			// at very small scales the text is drawn smaller than the font was made (fonts below ~6 px can't be built)
+			g_fText = load(uiReg, (std::max)(6.0f, 13.0f * g_fontK));
+			g_fSemi = load(uiSemi, (std::max)(6.0f, 17.0f * g_fontK));
+			g_fTitle = load(display, (std::max)(6.0f, 18.0f * g_fontK));
 			spdlog::info("UI: screen scale {:.2f}, widget {}%, fonts {}", screen, cfg.scalePct, g_fText ? "Inter + Cinzel" : "MISSING (Data\\SKSE\\Plugins\\Hearthsong\\Fonts)");
 		}
 
@@ -2179,7 +2181,7 @@ namespace Widget
 		cfg.posY = ReadFloat("Widget", "fPosY", 0.06f, 0.0f, 1.0f);
 		cfg.w = ReadFloat("Widget", "fWidth", kDefW, kMinW, kMaxW);
 		cfg.h = ReadFloat("Widget", "fHeight", kDefH, kMinH, kMaxH);
-		cfg.scalePct = ReadInt("Widget", "iScale", 100, 60, 200);
+		cfg.scalePct = ReadInt("Widget", "iScale", 100, 10, 200);
 		cfg.opacityPct = ReadInt("Widget", "iOpacity", 95, 30, 100);
 		cfg.showHeader = ReadBool("Widget", "bShowTitleBar", true);
 		cfg.showArt = ReadBool("Widget", "bShowAlbumArt", true);
