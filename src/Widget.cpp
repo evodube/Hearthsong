@@ -538,6 +538,16 @@ namespace Widget
 					continue;
 				}
 				const auto code = btn->GetIDCode();
+				if (e->GetDevice() == RE::INPUT_DEVICE::kMouse &&
+					(code == RE::BSWin32MouseDevice::Key::kWheelUp || code == RE::BSWin32MouseDevice::Key::kWheelDown)) {
+					// the wheel has no press/release like a button: every event with a value is one tick
+					if (g_cursor && btn->Value() != 0.0f) {
+						InputMsg m{ InputMsg::Kind::Wheel };
+						m.y = code == RE::BSWin32MouseDevice::Key::kWheelUp ? 1.0f : -1.0f;
+						PushInput(m);
+					}
+					continue;
+				}
 				const bool down = btn->IsDown();
 				const bool up = btn->IsUp();
 				if (!down && !up) {
@@ -662,14 +672,7 @@ namespace Widget
 						}
 					}
 				} else if (e->GetDevice() == RE::INPUT_DEVICE::kMouse && g_cursor) {
-					using MouseKey = RE::BSWin32MouseDevice::Key;
-					if (code == MouseKey::kWheelUp || code == MouseKey::kWheelDown) {
-						if (down) {
-							InputMsg m{ InputMsg::Kind::Wheel };
-							m.y = code == MouseKey::kWheelUp ? 1.0f : -1.0f;
-							PushInput(m);
-						}
-					} else if (code <= 4) {
+					if (code <= 4) {  // left, right, middle, X1, X2 (the wheel is handled above)
 						InputMsg m{ InputMsg::Kind::MouseButton };
 						m.button = static_cast<int>(code);
 						m.down = down;
@@ -776,7 +779,8 @@ namespace Widget
 		}
 
 		// Ctrl + wheel over the widget: its scale
-		bool g_wheelScale = false;
+		bool  g_wheelScale = false;
+		float g_wheelFrame = 0.0f;  // wheel ticks this frame (+ up / - down), used by the settings panel and the volume slider
 
 		void DrainInput()
 		{
@@ -786,6 +790,7 @@ namespace Widget
 				msgs.swap(g_input);
 			}
 			auto& io = ImGui::GetIO();
+			g_wheelFrame = 0.0f;
 			for (const auto& m : msgs) {
 				switch (m.kind) {
 				case InputMsg::Kind::MouseMove:
@@ -804,7 +809,7 @@ namespace Widget
 							g_pendingFonts = true;
 						}
 					} else {
-						io.AddMouseWheelEvent(0.0f, m.y);
+						g_wheelFrame += m.y;  // scrolling is done by hand where it's needed (not left to ImGui's window routing)
 					}
 					break;
 				case InputMsg::Kind::Key:
@@ -1224,9 +1229,9 @@ namespace Widget
 				}
 				g_volDragUntil = g_time + 0.8f;
 			}
-			if (ImGui::IsItemHovered() && known && std::fabs(ImGui::GetIO().MouseWheel) > 0.0f) {
+			if (ImGui::IsItemHovered() && known && g_wheelFrame != 0.0f) {
 				const float base = g_volDrag >= 0.0f ? g_volDrag : a_m.volume;
-				g_volDrag = std::clamp(base + ImGui::GetIO().MouseWheel * cfg.volumeStep / 100.0f, 0.0f, 1.0f);
+				g_volDrag = std::clamp(base + g_wheelFrame * cfg.volumeStep / 100.0f, 0.0f, 1.0f);
 				Media::SetVolume(g_volDrag);
 				g_volDragUntil = g_time + 0.8f;
 			}
@@ -1900,6 +1905,10 @@ namespace Widget
 			}
 			const float h = (std::min)(SS(560.0f), io.DisplaySize.y * 0.62f);
 			if (Theme::BeginParchment("##hs_settings", ImVec2(0.0f, h), true)) {
+				// mouse wheel over the panel scrolls it (done here directly, so nothing else can swallow the wheel)
+				if (g_wheelFrame != 0.0f && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+					ImGui::SetScrollY(std::clamp(ImGui::GetScrollY() - g_wheelFrame * SS(90.0f), 0.0f, ImGui::GetScrollMaxY()));
+				}
 				const float ctl = ImGui::GetContentRegionAvail().x - SS(330.0f);
 				if (g_settingsTab == 0) {
 					const Layout l = LayoutFor(cfg.w, cfg.h);
@@ -2539,6 +2548,7 @@ namespace Widget
 		} else {
 			g_undoRequest = false;
 			g_escRequest = false;
+			g_wheelFrame = 0.0f;
 		}
 		UpdateArt();
 
