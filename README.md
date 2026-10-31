@@ -50,3 +50,13 @@ which reads game structures through version-aware accessors so one DLL fits ever
 The packaged mod is published to the `dist` branch and as a workflow artifact.
 
 Fonts: Cinzel and Inter (SIL Open Font License, see `assets/fonts`).
+
+## Licence
+
+Copyright (C) 2026 evodube
+
+Hearthsong is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version. It is distributed WITHOUT ANY WARRANTY; see
+[LICENSE.txt](LICENSE.txt). The Modding Exception and GPL-3.0 Linking Exception from CommonLibSSE-NG
+apply ([EXCEPTIONS.txt](EXCEPTIONS.txt)). Third-party components: [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).

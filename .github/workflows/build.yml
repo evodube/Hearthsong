@@ -94,6 +94,7 @@ jobs:
           Copy-Item build/Release/Hearthsong.dll "$out/Data/SKSE/Plugins/"
           Copy-Item Hearthsong.ini "$out/Data/SKSE/Plugins/"
           Copy-Item assets/fonts/* "$out/Data/SKSE/Plugins/Hearthsong/Fonts/"
+          foreach ($f in "LICENSE.txt","EXCEPTIONS.txt","THIRD-PARTY-NOTICES.txt","README.txt") { Copy-Item $f "$out/Data/SKSE/Plugins/Hearthsong/" }
           Get-ChildItem -Recurse $out | Format-Table FullName, Length
 
       - name: Publish package to dist branch
